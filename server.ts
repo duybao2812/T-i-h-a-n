@@ -130,8 +130,24 @@ app.post(["/api/analyze-xml", "/analyze-xml"], (req, res) => {
 });
 
 // API 2: Tải code Python Local dạng ZIP hoàn chỉnh theo yêu cầu của người dùng
-app.get(["/api/download-python-code", "/download-python-code"], async (req, res) => {
+const handleDownloadZipRequest = async (req: any, res: any) => {
   try {
+    // Ưu tiên đọc file zip tĩnh có sẵn trên đĩa để tránh lỗi giải nén và tối ưu hóa CPU
+    const possiblePaths = [
+      path.join(process.cwd(), "public", "XML_Invoice_Downloader_Local.zip"),
+      path.join(process.cwd(), "dist", "XML_Invoice_Downloader_Local.zip"),
+      path.join(process.cwd(), "XML_Invoice_Downloader_Local.zip"),
+    ];
+
+    for (const filePath of possiblePaths) {
+      if (fs.existsSync(filePath)) {
+        res.setHeader("Content-Type", "application/zip");
+        res.setHeader("Content-Disposition", "attachment; filename=XML_Invoice_Downloader_Local.zip");
+        return res.sendFile(filePath);
+      }
+    }
+
+    // Fallback nén động bằng JSZip nếu không tìm thấy file zip tĩnh
     const zip = new JSZip();
 
     // 1. file app.py - FastAPI & Playwright Python
@@ -1011,7 +1027,10 @@ Mở trình duyệt web của bạn và đăng nhập vào đường link: \`htt
     console.error("Lỗi tạo mã zip Python local:", error);
     return res.status(500).json({ error: "Lỗi đóng gói mã zip Python local: " + error.message });
   }
-});
+};
+
+app.get("/api/download-python-code", handleDownloadZipRequest);
+app.get("/download-python-code", handleDownloadZipRequest);
 
 // API 3: Tải đơn lẻ PDF cho trình duyệt live demo
 // Để mang lại trải nghiệm 100% mượt mà cho người dùng khi chạy trực tiếp trên web Sandbox,
