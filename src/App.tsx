@@ -485,7 +485,7 @@ export default function App() {
               <label className="block text-[10.5px] font-bold uppercase tracking-[0.2em] mb-3 text-[#1A1A1A]/60 font-serif">
                 Thư Mục Lưu Trữ Cục Bộ
               </label>
-              <div className="relative group border-b border-[#1A1A1A] pb-1">
+              <div className="relative group border-b border-[#1A1A1A] pb-1 flex items-center justify-between">
                 <input 
                   type="text" 
                   value={settings.saveDir} 
@@ -493,7 +493,24 @@ export default function App() {
                   placeholder="Ví dụ: D:/HoaDon/Output/"
                   className="w-full bg-transparent text-sm font-mono font-medium focus:outline-none placeholder:text-slate-400" 
                 />
-                <span className="absolute right-0 bottom-1.5 text-[9px] font-bold text-emerald-600 uppercase">THƯ MỤC CÁ NHÂN</span>
+                <button
+                  onClick={async () => {
+                    try {
+                      if (window.showDirectoryPicker) {
+                        const dirHandle = await window.showDirectoryPicker();
+                        setSettings({ ...settings, saveDir: `[TuTrinhDuyet]_${dirHandle.name}` });
+                      } else {
+                        alert("Trình duyệt của bạn không hỗ trợ tính năng chọn thư mục. Hãy nhập thủ công.");
+                      }
+                    } catch (err) {
+                      console.log("Hủy chọn thư mục hoặc lỗi:", err);
+                    }
+                  }}
+                  className="ml-2 bg-[#1A1A1A] text-white px-3 py-1 text-[10px] font-bold uppercase rounded hover:bg-emerald-600 transition-colors whitespace-nowrap"
+                  title="Chọn thư mục"
+                >
+                  Chọn Thư Mục
+                </button>
               </div>
               <p className="mt-2 text-[10px] text-slate-500 leading-relaxed font-sans italic">
                 Lưu ý: Playwright sẽ dùng lệnh <code className="font-mono bg-slate-100 text-slate-800 px-1 py-0.5 rounded font-bold">download.save_as()</code> để tải trực tiếp và ghi đè thẳng vào ổ đĩa của bạn trên PC thực tế.

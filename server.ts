@@ -581,7 +581,12 @@ pause
                     <div class="space-y-4 text-xs">
                         <div>
                             <label class="block text-slate-400 mb-1">Thư mục lưu hóa đơn PDF:</label>
-                            <input type="text" id="saveDir" value="D:/HoaDon/" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-100 font-mono focus:outline-none focus:border-emerald-500">
+                            <div class="flex items-center gap-2">
+                                <input type="text" id="saveDir" value="D:/HoaDon/" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-100 font-mono focus:outline-none focus:border-emerald-500">
+                                <button type="button" onclick="async function selectDir() { try { if (window.showDirectoryPicker) { const dirHandle = await window.showDirectoryPicker(); document.getElementById('saveDir').value = '[TuTrinhDuyet]_' + dirHandle.name; } else { alert('Trình duyệt của bạn không hỗ trợ tính năng chọn thư mục. Hãy nhập thủ công.'); } } catch (err) { console.log('Hủy chọn thư mục:', err); } } selectDir();" class="whitespace-nowrap px-3 py-2 bg-slate-800 hover:bg-emerald-600 text-slate-200 text-xs font-semibold rounded border border-slate-700 transition">
+                                    Chọn Thư Mục
+                                </button>
+                            </div>
                         </div>
                         <div>
                             <label class="block text-slate-400 mb-1">Phương thức giải Captcha:</label>
