@@ -9,6 +9,123 @@ const PORT = 3000;
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+// Nạp cơ sỡ dữ liệu nhà cung cấp từ invoice_providers.xml
+const loadInvoiceProviders = (): Record<string, { name: string; website: string; codeTag: string; keyType: string; keyName: string }> => {
+  const map: Record<string, { name: string; website: string; codeTag: string; keyType: string; keyName: string }> = {};
+  
+  // Nạp mặc định một số nhà cung cấp chính để dự phòng
+  map["0101243150"] = { name: "Công ty Cổ phần MISA", website: "https://www.meinvoice.vn/tra-cuu/", codeTag: "TransactionID", keyType: "TTruong", keyName: "TransactionID" };
+  
+  try {
+    const xmlPath = path.join(process.cwd(), "invoice_providers.xml");
+    if (fs.existsSync(xmlPath)) {
+      const xmlContent = fs.readFileSync(xmlPath, "utf-8");
+      const providerRegex = /<Provider>[^]*?<\/Provider>/gi;
+      let match;
+      while ((match = providerRegex.exec(xmlContent)) !== null) {
+        const block = match[0];
+        const taxCodeMatch = block.match(/<TaxCode[^]*?>([^<]+)<\/TaxCode[^]*?>/i);
+        const searchLinkMatch = block.match(/<SearchLink[^]*?>([^<]+)<\/SearchLink[^]*?>/i);
+        const companyNameMatch = block.match(/<CompanyName[^]*?>([^<]+)<\/CompanyName[^]*?>/i);
+        const keyTypeMatch = block.match(/<KeyType[^]*?>([^<]+)<\/KeyType[^]*?>/i);
+        const keyNameMatch = block.match(/<KeyName[^]*?>([^<]+)<\/KeyName[^]*?>/i);
+        if (taxCodeMatch && searchLinkMatch) {
+          const taxCode = taxCodeMatch[1].trim();
+          const searchLink = searchLinkMatch[1].trim();
+          const companyName = companyNameMatch ? companyNameMatch[1].trim() : "Nhà cung cấp";
+          const keyType = keyTypeMatch ? keyTypeMatch[1].trim() : "";
+          const keyName = keyNameMatch ? keyNameMatch[1].trim() : "";
+          if (taxCode && searchLink && searchLink !== "Chưa cập nhật") {
+            map[taxCode] = {
+              name: companyName,
+              website: searchLink,
+              codeTag: taxCode === "0101243150" ? "TransactionID" : "",
+              keyType: keyType,
+              keyName: keyName
+            };
+          }
+        }
+      }
+      console.log(`[HỆ THỐNG] Đã nạp thành công ${Object.keys(map).length} nhà cung cấp từ invoice_providers.xml`);
+    } else {
+      console.log("[HỆ THỐNG] Không tìm thấy file invoice_providers.xml, sử dụng danh sách fallback");
+    }
+  } catch (error) {
+    console.error("Lỗi nạp invoice_providers.xml ở Node.js:", error);
+  }
+  return map;
+};
+
+const removeDiacriticsAndSpaces = (str: string): string => {
+  if (!str) return "";
+  return str
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "d")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+};
+
+const invoiceProvidersMap = loadInvoiceProviders();
+
+const heuristicExtractCode = (zoneText: string): { status: "success" | "failed"; keyName?: string; maTraCuu?: string } => {
+  const semanticKeywords = ['ma', 'tra cuu', 'bao mat', 'fkey', 'key', 'id', 'token', 'secret', 'code', 'mat khau', 'chuoi'];
+
+  const removeVietnameseSign = (text: string): string => {
+    if (!text) return "";
+    return text
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/g, "d")
+      .replace(/Đ/g, "d")
+      .toLowerCase()
+      .trim();
+  };
+
+  const ttinRegex = /<(?:[a-zA-Z0-9_]+:)?TTin[^>]*?>([^]*?)<\/(?:[a-zA-Z0-9_]+:)?TTin>/gi;
+  const ttruongRegex = /<(?:[a-zA-Z0-9_]+:)?TTruong[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?TTruong>/i;
+  const kdlieuRegex = /<(?:[a-zA-Z0-9_]+:)?KDLieu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?KDLieu>/i;
+  const dlieuRegex = /<(?:[a-zA-Z0-9_]+:)?DLieu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?DLieu>/i;
+
+  let ttinMatch;
+  while ((ttinMatch = ttinRegex.exec(zoneText)) !== null) {
+    const block = ttinMatch[1];
+    const ttruongMatch = block.match(ttruongRegex);
+    const kdlieuMatch = block.match(kdlieuRegex);
+    const dlieuMatch = block.match(dlieuRegex);
+
+    if (ttruongMatch && kdlieuMatch && dlieuMatch) {
+      const ttruongText = ttruongMatch[1].trim();
+      const kdlieuText = kdlieuMatch[1].trim().toLowerCase();
+      const dlieuText = dlieuMatch[1].trim();
+
+      if (kdlieuText === "string") {
+        const ttruongClean = removeVietnameseSign(ttruongText);
+        const hasKeyword = semanticKeywords.some(kw => ttruongClean.includes(kw));
+
+        if (hasKeyword) {
+          const cleanMatch = dlieuText.match(/[A-Za-z0-9\-_;]+/);
+          if (cleanMatch) {
+            const finalCode = cleanMatch[0];
+            if (finalCode.length >= 6 && !/^\d+$/.test(finalCode)) {
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(finalCode)) {
+                return {
+                  status: "success",
+                  keyName: ttruongText,
+                  maTraCuu: finalCode
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { status: "failed" };
+};
+
 // API 1: Phân tích XML metadata gửi từ client
 // Client gửi lên danh sách { id, fileName, fileContent }
 app.post(["/api/analyze-xml", "/analyze-xml"], (req, res) => {
@@ -22,129 +139,291 @@ app.post(["/api/analyze-xml", "/analyze-xml"], (req, res) => {
       const content = file.fileContent;
       const fileName = file.fileName;
 
-      // Thuật toán parse XML linh hoạt bằng Regex để hoạt động cả client và server đơn giản
       let code = "";
       let website = "";
       let invoiceType: "new" | "replaced" | "canceled" | "unknown" = "new";
-      let status: "valid" | "invalid" | "warning" = "valid";
+      let status: "valid" | "invalid" | "warning" | "rejected" = "valid";
       let errorDescription = "";
 
-      // 1. Trích xuất thông tin từ thẻ <TTKhac> hoặc toàn bộ tệp (Cải tiến với các từ khóa động đa dạng)
-      const ttKhacRegex = /<TTKhac[\s\S]*?>([\s\S]*?)<\/TTKhac>/i;
-      const ttKhacMatch = content.match(ttKhacRegex);
-      const searchZone = ttKhacMatch ? ttKhacMatch[1] : content;
+      // Lấy MST Nhà Cung Cấp Giải Pháp (MSTTCGP) thông qua local name bóc tách
+      const msttcgpMatch = content.match(/<(?:[a-zA-Z0-9_]+:)?MSTTCGP[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?MSTTCGP>/i);
+      const msttcgp = msttcgpMatch ? msttcgpMatch[1].trim() : "";
+
+      // Loại bỏ thông tin người bán NBan và người mua NMua để tránh trích xuất nhầm website nội bộ của họ
+      const cleanContent = content
+        .replace(/<(?:[a-zA-Z0-9_]+:)?NBan[^>]*?>[^]*?<\/(?:[a-zA-Z0-9_]+:)?NBan>/gi, "")
+        .replace(/<(?:[a-zA-Z0-9_]+:)?NMua[^>]*?>[^]*?<\/(?:[a-zA-Z0-9_]+:)?NMua>/gi, "");
+
+      // 1. Trích xuất thông tin từ thẻ <TTKhac> hoặc toàn bộ tệp
+      const ttKhacRegex = /<(?:[a-zA-Z0-9_]+:)?TTKhac[^>]*?>([^]*?)<\/(?:[a-zA-Z0-9_]+:)?TTKhac>/i;
+      const ttKhacMatch = cleanContent.match(ttKhacRegex);
+      const searchZone = ttKhacMatch ? ttKhacMatch[1] : cleanContent;
 
       const webKeys = ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link", "portallink", "portal_link", "portal", "trang_tc"];
-      const codeKeys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "co_quan_thue", "tc_code", "ma_bmat"];
+      const codeKeys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "ma_bmat"];
+
+      const isValidLookupUrl = (url: string): boolean => {
+        if (!url) return false;
+        const low = url.toLowerCase();
+        // Loại trừ chữ ký số và hệ thống namespace
+        if (
+          low.includes("w3.org") || 
+          low.includes("xmldsig") || 
+          low.includes("schema") || 
+          low.includes("xml") || 
+          low.includes("uri:") ||
+          low.includes("namespace") ||
+          low.includes("tempuri.org") ||
+          low.includes("purl.org")
+        ) {
+          return false;
+        }
+        return true;
+      };
 
       const extractFromZone = (zoneText: string) => {
         // Quét các khối thẻ <TTin> (chứa TTruong và DLieu hoặc Key và Value) để bóc tách động
-        const ttinRegex = /<TTin[^]*?>([\s\S]*?)<\/TTin[^>]*?>/gi;
+        const ttinRegex = /<(?:[a-zA-Z0-9_]+:)?TTin[^>]*?>([^]*?)<\/(?:[a-zA-Z0-9_]+:)?TTin>/gi;
+        const ttruongRegex = /<(?:[a-zA-Z0-9_]+:)?TTruong[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?TTruong>/i;
+        const dlieuRegex = /<(?:[a-zA-Z0-9_]+:)?DLieu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?DLieu>/i;
+        
         let ttinMatch;
         while ((ttinMatch = ttinRegex.exec(zoneText)) !== null) {
           const block = ttinMatch[1];
-          const ttruongMatch = block.match(/<TTruong[^]*?>([^<]+)<\/TTruong[^>]*?>/i);
-          const dlieuMatch = block.match(/<DLieu[^]*?>([^<]+)<\/DLieu[^>]*?>/i);
+          const ttruongMatch = block.match(ttruongRegex);
+          const dlieuMatch = block.match(dlieuRegex);
           
           if (ttruongMatch && dlieuMatch) {
-            const key = ttruongMatch[1].trim().toLowerCase();
+            const rawKey = ttruongMatch[1].trim();
+            const key = removeDiacriticsAndSpaces(rawKey);
             const val = dlieuMatch[1].trim();
-            if (webKeys.some(x => key.includes(x))) {
-              if (!website) website = val;
+            if (isValidLookupUrl(val)) {
+              if (webKeys.some(x => {
+                const normX = removeDiacriticsAndSpaces(x);
+                return key.includes(normX) || normX.includes(key);
+              })) {
+                if (!website) website = val;
+              }
             }
-            if (codeKeys.some(x => key.includes(x))) {
+            if (codeKeys.some(x => {
+              const normX = removeDiacriticsAndSpaces(x);
+              return key.includes(normX) || normX.includes(key);
+            })) {
               if (!code) code = val;
             }
           }
 
           // Dạng Key / Value
-          const keyMatch = block.match(/<Key[^]*?>([^<]+)<\/Key[^>]*?>/i);
-          const valMatch = block.match(/<Value[^]*?>([^<]+)<\/Value[^>]*?>/i);
+          const keyMatch = block.match(/<(?:[a-zA-Z0-9_]+:)?Key[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?Key>/i);
+          const valMatch = block.match(/<(?:[a-zA-Z0-9_]+:)?Value[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?Value>/i);
           if (keyMatch && valMatch) {
-            const key = keyMatch[1].trim().toLowerCase();
+            const rawKey = keyMatch[1].trim();
+            const key = removeDiacriticsAndSpaces(rawKey);
             const val = valMatch[1].trim();
-            if (webKeys.some(x => key.includes(x))) {
-              if (!website) website = val;
+            if (isValidLookupUrl(val)) {
+              if (webKeys.some(x => {
+                const normX = removeDiacriticsAndSpaces(x);
+                return key.includes(normX) || normX.includes(key);
+              })) {
+                if (!website) website = val;
+              }
             }
-            if (codeKeys.some(x => key.includes(x))) {
+            if (codeKeys.some(x => {
+              const normX = removeDiacriticsAndSpaces(x);
+              return key.includes(normX) || normX.includes(key);
+            })) {
               if (!code) code = val;
             }
           }
         }
       };
 
-      // Thử tìm trong khối <TTKhac> trước
-      extractFromZone(searchZone);
+      let dynamicRuleActive = false;
+      let dynamicMatchedCode = false;
 
-      // Fallback: Tìm trên toàn bộ nội dung file nếu chưa có đầy đủ thông tin
-      if (!code || !website) {
-        extractFromZone(content);
-      }
+      if (msttcgp && invoiceProvidersMap[msttcgp]) {
+        const provider = invoiceProvidersMap[msttcgp];
+        const keyType = provider.keyType;
+        const keyName = provider.keyName;
+        if (keyType && keyName) {
+          dynamicRuleActive = true;
+          website = provider.website;
 
-      // 2. Tìm mã tra cứu bằng các regex trực tiếp trên toàn bộ nội dung
-      if (!code) {
-        const codeRegexes = [
-          /<MTC[\s\S]*?>([^<]+)<\/MTC>/i,
-          /<MaTraCuu[\s\S]*?>([^<]+)<\/MaTraCuu>/i,
-          /<MaTraCuuHDon[\s\S]*?>([^<]+)<\/MaTraCuuHDon>/i,
-          /<MTCHDon[\s\S]*?>([^<]+)<\/MTCHDon>/i,
-          /<MaTraCuuHD[\s\S]*?>([^<]+)<\/MaTraCuuHD>/i,
-          /<Fkey[^]*?>([^<]+)<\/Fkey[^>]*?>/i,
-          /<F_key[^]*?>([^<]+)<\/F_key[^>]*?>/i,
-          /<SecretKey[^]*?>([^<]+)<\/SecretKey[^>]*?>/i,
-          /<Secret_Key[^]*?>([^<]+)<\/Secret_Key[^>]*?>/i,
-          /<MaBiMat[^]*?>([^<]+)<\/MaBiMat[^>]*?>/i
-        ];
+          // Thực hiện quét động theo luật của nhà cung cấp
+          if (keyType === "TTruong") {
+            const ttinRegex = /<(?:[a-zA-Z0-9_]+:)?TTin[^>]*?>([^]*?)<\/(?:[a-zA-Z0-9_]+:)?TTin>/gi;
+            const ttruongRegex = /<(?:[a-zA-Z0-9_]+:)?TTruong[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?TTruong>/i;
+            const dlieuRegex = /<(?:[a-zA-Z0-9_]+:)?DLieu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?DLieu>/i;
+            let ttinMatch;
+            while ((ttinMatch = ttinRegex.exec(cleanContent)) !== null) {
+              const block = ttinMatch[1];
+              const ttruongMatch = block.match(ttruongRegex);
+              const dlieuMatch = block.match(dlieuRegex);
+              if (ttruongMatch && dlieuMatch) {
+                const rawKey = ttruongMatch[1].trim();
+                const key = removeDiacriticsAndSpaces(rawKey);
+                const normKeyName = removeDiacriticsAndSpaces(keyName);
+                if (key === normKeyName || rawKey.toLowerCase() === keyName.toLowerCase()) {
+                  code = dlieuMatch[1].trim();
+                  dynamicMatchedCode = true;
+                  break;
+                }
+              }
+            }
+          } else if (keyType === "Id") {
+            // Luật Id: Tìm <TTin Id="keyName">...<DLieu>value</DLieu>...</TTin>
+            const escapedKeyName = keyName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+            const targetTtinRegex = new RegExp(`<(?:[a-zA-Z0-9_]+:)?TTin[^>]*?\\bId=["']${escapedKeyName}["'][^>]*?>([^]*?)<\\/(?:[a-zA-Z0-9_]+:)?TTin>`, "gi");
+            const dlieuRegex = /<(?:[a-zA-Z0-9_]+:)?DLieu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?DLieu>/i;
+            
+            let ttinMatch;
+            while ((ttinMatch = targetTtinRegex.exec(cleanContent)) !== null) {
+              const block = ttinMatch[1];
+              const dlieuMatch = block.match(dlieuRegex);
+              if (dlieuMatch) {
+                code = dlieuMatch[1].trim();
+                dynamicMatchedCode = true;
+                break;
+              }
+            }
+          }
 
-        for (const regex of codeRegexes) {
-          const match = content.match(regex);
-          if (match && match[1]) {
-            code = match[1].trim();
-            break;
+          if (dynamicMatchedCode) {
+            console.log(`[Engine Quét Động] Đã trích xuất mã [${code}] theo luật ${keyType} (KeyName: ${keyName}) cho MST ${msttcgp}`);
+          } else {
+            status = "invalid";
+            errorDescription = `Hệ thống từ chối: Không quét được mã tra cứu theo luật của nhà cung cấp {KeyName: ${keyName}}.`;
+            console.warn(`[Engine Quét Động] ${errorDescription}`);
           }
         }
       }
 
-      // 3. Tìm link website bằng các regex trực tiếp trên toàn bộ nội dung
-      if (!website) {
-        const webRegexes = [
-          /<LinkTraCuu[\s\S]*?>([^<]+)<\/LinkTraCuu>/i,
-          /<TrangWebTraCuu[\s\S]*?>([^<]+)<\/TrangWebTraCuu>/i,
-          /<URLTraCuu[\s\S]*?>([^<]+)<\/URLTraCuu>/i,
-          /<TrangWeb[\s\S]*?>([^<]+)<\/TrangWeb>/i,
-          /<Link[\s\S]*?>([^<]+)<\/Link>/i,
-          /<PortalLink[^]*?>([^<]+)<\/PortalLink[^>]*?>/i,
-          /<Portal_Link[^]*?>([^<]+)<\/Portal_Link[^>]*?>/i,
-          /https?:\/\/[^\s<]+/i
-        ];
+      if (!dynamicRuleActive) {
+        // Áp dụng thuật toán Heuristic đoán động mã tra cứu trước tiên
+        const heuristicRes = heuristicExtractCode(cleanContent);
+        if (heuristicRes.status === "success" && heuristicRes.maTraCuu) {
+          code = heuristicRes.maTraCuu;
+          console.log(`[Heuristic NodeJS] Tự động nhận diện mã tra cứu thành công: [${code}] với tên trường '${heuristicRes.keyName}'`);
+        }
 
-        for (const regex of webRegexes) {
-          const match = content.match(regex);
-          if (match) {
-            const rawWeb = match[1] ? match[1].trim() : match[0].trim();
-            if (rawWeb.startsWith("http")) {
-              website = rawWeb;
+        // Thử tìm trong khối <TTKhac> trước
+        extractFromZone(searchZone);
+
+        // Fallback: Tìm trên toàn bộ nội dung file nếu chưa có đầy đủ thông tin
+        if (!code || !website) {
+          extractFromZone(cleanContent);
+        }
+
+        // 2. Tìm mã tra cứu bằng các regex trực tiếp trên toàn bộ nội dung
+        if (!code) {
+          const codeRegexes = [
+            /<(?:[a-zA-Z0-9_]+:)?MTC[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?MTC>/i,
+            /<(?:[a-zA-Z0-9_]+:)?MaTraCuu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?MaTraCuu>/i,
+            /<(?:[a-zA-Z0-9_]+:)?MaTraCuuHDon[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?MaTraCuuHDon>/i,
+            /<(?:[a-zA-Z0-9_]+:)?MTCHDon[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?MTCHDon>/i,
+            /<(?:[a-zA-Z0-9_]+:)?MaTraCuuHD[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?MaTraCuuHD>/i,
+            /<(?:[a-zA-Z0-9_]+:)?Fkey[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?Fkey>/i,
+            /<(?:[a-zA-Z0-9_]+:)?F_key[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?F_key>/i,
+            /<(?:[a-zA-Z0-9_]+:)?SecretKey[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?SecretKey>/i,
+            /<(?:[a-zA-Z0-9_]+:)?Secret_Key[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?Secret_Key>/i,
+            /<(?:[a-zA-Z0-9_]+:)?MaBiMat[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?MaBiMat>/i
+          ];
+
+          for (const regex of codeRegexes) {
+            const match = cleanContent.match(regex);
+            if (match && match[1]) {
+              code = match[1].trim();
               break;
+            }
+          }
+        }
+
+        // 3. Tìm link website bằng các regex trực tiếp trên toàn bộ nội dung
+        if (!website) {
+          const webRegexes = [
+            /<(?:[a-zA-Z0-9_]+:)?LinkTraCuu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?LinkTraCuu>/i,
+            /<(?:[a-zA-Z0-9_]+:)?TrangWebTraCuu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?TrangWebTraCuu>/i,
+            /<(?:[a-zA-Z0-9_]+:)?URLTraCuu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?URLTraCuu>/i,
+            /<(?:[a-zA-Z0-9_]+:)?TrangWeb[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?TrangWeb>/i,
+            /<(?:[a-zA-Z0-9_]+:)?Link[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?Link>/i,
+            /<(?:[a-zA-Z0-9_]+:)?PortalLink[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?PortalLink>/i,
+            /<(?:[a-zA-Z0-9_]+:)?Portal_Link[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?Portal_Link>/i
+          ];
+
+          for (const regex of webRegexes) {
+            const match = cleanContent.match(regex);
+            if (match && match[1] && isValidLookupUrl(match[1].trim())) {
+              website = match[1].trim();
+              break;
+            }
+          }
+        }
+
+        // Nếu vẫn không tìm thấy link, quét xem có URL http/https nào trong cleanContent không
+        if (!website) {
+          const urls = cleanContent.match(/https?:\/\/[^\s<"]+/gi) || [];
+          for (const url of urls) {
+            const trimmedUrl = url.trim();
+            if (isValidLookupUrl(trimmedUrl)) {
+              website = trimmedUrl;
+              break;
+            }
+          }
+        }
+
+        // 4. Xử lý Fallback khi không thấy Link trực tiếp qua MSTTCGP nạp từ database
+        if (!website) {
+          if (msttcgp && invoiceProvidersMap[msttcgp]) {
+            const provider = invoiceProvidersMap[msttcgp];
+            website = provider.website;
+            console.log(`[Hệ thống] Hóa đơn không có link trực tiếp. Đã gán link tra cứu cho MST nhà cung cấp ${msttcgp}: ${website}`);
+          } else {
+            status = "invalid";
+            errorDescription = "[LỖI] Không tìm thấy nhà cung cấp dịch vụ tương thích cho Mã số thuế doanh nghiệp giải pháp này.";
+          }
+        }
+
+        // 5. Nếu website hợp lệ và có cấu hình codeTag đặc thù từ database (Ví dụ: TransactionID của MISA)
+        if (website && status === "valid") {
+          if (msttcgp && invoiceProvidersMap[msttcgp]) {
+            const provider = invoiceProvidersMap[msttcgp];
+            if (!code && provider.codeTag) {
+              const targetTag = provider.codeTag;
+              const ttinRegex = /<(?:[a-zA-Z0-9_]+:)?TTin[^>]*?>([^]*?)<\/(?:[a-zA-Z0-9_]+:)?TTin>/gi;
+              const ttruongRegex = /<(?:[a-zA-Z0-9_]+:)?TTruong[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?TTruong>/i;
+              const dlieuRegex = /<(?:[a-zA-Z0-9_]+:)?DLieu[^>]*?>([^<]+)<\/(?:[a-zA-Z0-9_]+:)?DLieu>/i;
+              
+              let ttinMatch;
+              ttinRegex.lastIndex = 0;
+              while ((ttinMatch = ttinRegex.exec(cleanContent)) !== null) {
+                const block = ttinMatch[1];
+                const ttruongMatch = block.match(ttruongRegex);
+                const dlieuMatch = block.match(dlieuRegex);
+                if (ttruongMatch && dlieuMatch) {
+                  if (ttruongMatch[1].trim().toLowerCase() === targetTag.toLowerCase()) {
+                    code = dlieuMatch[1].trim();
+                    break;
+                  }
+                }
+              }
             }
           }
         }
       }
 
-      // Nếu không tìm thấy mã tra cứu
-      if (!code) {
-        status = "invalid";
-        errorDescription = "Hệ thống từ chối: Không tìm thấy mã tra cứu hóa đơn.";
+      // Kiểm tra trạng thái mã tra cứu
+      if (status === "valid" && !code) {
+        status = "rejected";
+        errorDescription = "Không tìm thấy mã tra cứu riêng theo quy tắc tính hợp lệ của thẻ <TTKhac>";
       }
 
-      // 2. Kiểm tra trạng thái/loại hóa đơn
-      // Tìm xem có thẻ chỉ báo trạng thái hủy/thay thế không
-      // Ví dụ: <TThai>, <TrangThai>, <HDonBiThayThe>, <HDonBiDieuChinh>, <LoaiHDon> 
+      // Xử lý hóa đơn thay thế / hủy
       const lowerContent = content.toLowerCase();
       if (
         lowerContent.includes("hủy") || 
         lowerContent.includes("hoa don huy") || 
         lowerContent.includes("hoadonhuy") ||
-        lowerContent.includes("<tthai>3</tthai>") || // Thường số 3 hoặc 4 là hủy/bị thay thế tùy chuẩn
+        lowerContent.includes("<tthai>3</tthai>") ||
         lowerContent.includes("<trangthai>hủy</trangthai>")
       ) {
         invoiceType = "canceled";
@@ -164,7 +443,7 @@ app.post(["/api/analyze-xml", "/analyze-xml"], (req, res) => {
         id: file.id,
         fileName,
         fileContent: content,
-        website: website || "https://hoadondientu.gdt.gov.vn", // Fallback trang GDT nếu không thấy
+        website: website || "https://hoadondientu.gdt.gov.vn",
         code,
         invoiceType,
         status,
@@ -242,6 +521,116 @@ except Exception as e:
 
 app = FastAPI(title="XML Invoice PDF Downloader")
 
+# Nạp cơ sở dữ liệu nhà cung cấp từ tệp invoice_providers.xml
+provider_mapping = {}
+try:
+    xml_path = "invoice_providers.xml"
+    if not os.path.exists(xml_path):
+        xml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "invoice_providers.xml")
+    if not os.path.exists(xml_path):
+        xml_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "invoice_providers.xml")
+    
+    if os.path.exists(xml_path):
+        tree = ET.parse(xml_path)
+        root_prov = tree.getroot()
+        for provider in root_prov.findall("Provider"):
+            cn_node = provider.find("CompanyName")
+            company_name_val = cn_node.text.strip() if cn_node is not None and cn_node.text else ""
+            tax_code_el = provider.find("TaxCode")
+            search_link_el = provider.find("SearchLink")
+            key_type_el = provider.find("KeyType")
+            key_name_el = provider.find("KeyName")
+            if tax_code_el is not None and search_link_el is not None:
+                tc = tax_code_el.text.strip() if tax_code_el.text else ""
+                sl = search_link_el.text.strip() if search_link_el.text else ""
+                if tc and sl and sl != "Chưa cập nhật":
+                    kt = key_type_el.text.strip() if key_type_el is not None and key_type_el.text else ""
+                    kn = key_name_el.text.strip() if key_name_el is not None and key_name_el.text else ""
+                    provider_mapping[tc] = {
+                        "name": company_name_val,
+                        "website": sl,
+                        "codeTag": "TransactionID" if tc == "0101243150" else "",
+                        "key_type": kt,
+                        "key_name": kn
+                    }
+        print(f"[HỆ THỐNG] Đã tải thành công {len(provider_mapping)} nhà cung cấp dịch vụ từ invoice_providers.xml")
+except Exception as e:
+    print(f"[CẢNH BÁO] Không thể nạp database hóa đơn XML ({e})")
+
+# Fallback mặc định phòng hờ không đọc được file
+if "0101243150" not in provider_mapping:
+    provider_mapping["0101243150"] = {
+        "name": "MISA (meInvoice)",
+        "website": "https://www.meinvoice.vn/tra-cuu/",
+        "codeTag": "TransactionID",
+        "key_type": "TTruong",
+        "key_name": "TransactionID"
+    }
+
+# Bo loc thong minh (Smart Filter) tu dong nhan dien ma tra cuu bang thuat toan doan dong (Heuristic)
+def heuristic_extract_lookup_code(xml_root_element):
+    import re
+    
+    def get_local_name(elem):
+        return elem.tag.split('}')[-1]
+        
+    semantic_keywords = ['ma', 'tra cuu', 'bao mat', 'fkey', 'key', 'id', 'token', 'secret', 'code', 'mat khau', 'chuoi']
+    
+    def remove_vietnamese_sign(text):
+        if not text: return ""
+        text = text.lower()
+        replacements = {
+            'á':'a','à':'a','ả':'a','ã':'a','ạ':'a','ă':'a','ắ':'a','ằ':'a','ẳ':'a','ẵ':'a','ặ':'a','â':'a','ấ':'a','ầ':'a','ẩ':'a','ẫ':'a','ậ':'a',
+            'é':'e','è':'e','ẻ':'e','ẽ':'e','ẹ':'e','ê':'e','ế':'e','ề':'e','ể':'e','ễ':'e','ệ':'e',
+            'í':'i','ì':'i','ỉ':'i','ĩ':'i','ị':'i',
+            'ó':'o','ò':'o','ỏ':'o','õ':'o','ọ':'o','ô':'o','ố':'o','ồ':'o','ổ':'o','ỗ':'o','ộ':'o','ơ':'o','ớ':'o','ờ':'o','ở':'o','ỡ':'o','ợ':'o',
+            'ú':'u','à':'u','ủ':'u','ũ':'u','ụ':'u','ư':'u','ứ':'u','ừ':'u','ử':'u','ữ':'u','ự':'u',
+            'ý':'y','ỳ':'y','ỷ':'y','ỹ':'y','ỵ':'y','đ':'d'
+        }
+        for k, v in replacements.items():
+            text = text.replace(k, v)
+        return text.strip()
+
+    ttin_elements = [e for e in xml_root_element.iter() if get_local_name(e) == 'TTin']
+    
+    for ttin in ttin_elements:
+        # GIAI PHAP: Map toan bo the con vao Dictionary de triet tieu loi sai thu tu
+        child_map = {get_local_name(ch): ch for ch in ttin}
+        
+        ttruong_elem = child_map.get('TTruong')
+        kdlieu_elem = child_map.get('KDLieu')
+        dlieu_elem = child_map.get('DLieu')
+        
+        if ttruong_elem is not None and kdlieu_elem is not None and dlieu_elem is not None:
+            ttruong_text = ttruong_elem.text if ttruong_elem.text else ""
+            kdlieu_text = kdlieu_elem.text.strip().lower() if kdlieu_elem.text else ""
+            dlieu_text = dlieu_elem.text.strip() if dlieu_elem.text else ""
+            
+            # Kiem tra Dieu kien 1: Kieu du lieu string
+            if kdlieu_text == "string":
+                ttruong_clean = remove_vietnamese_sign(ttruong_text)
+                
+                # Kiem tra Dieu kien 2: Khớp từ khóa ngữ nghĩa
+                has_keyword = any(kw in ttruong_clean for kw in semantic_keywords)
+                
+                if has_keyword:
+                    # Lam sach chuoi neu co ky tu ghi chu hoac dau cach la
+                    # Chi lay phan text chu va so hop le lam token ma tra cuu
+                    clean_match = re.search(r'[A-Za-z0-9\-_;]+', dlieu_text)
+                    if clean_match:
+                        final_code = clean_match.group(0)
+                        
+                        # Kiem tra Dieu kien 3: Do dai >= 6 va khong phai so thuan tuy
+                        if len(final_code) >= 6 and not final_code.isdigit():
+                            if not re.match(r'^\d{4}-\d{2}-\d{2}$', final_code):
+                                return {
+                                    "status": "success",
+                                    "key_name": ttruong_text,
+                                    "ma_tra_cuu": final_code
+                                }
+                            
+    return {"status": "failed", "message": "Khong tu dong nhan dien duoc ma tra cuu"}
+
 # Hàm trích xuất thông tin hóa đơn từ XML đúng nghiệp vụ
 def parse_xml_invoice(xml_content: str, file_name: str):
     code = ""
@@ -249,101 +638,251 @@ def parse_xml_invoice(xml_content: str, file_name: str):
     invoice_type = "new"
     status = "valid"
     error_desc = ""
+    msttcgp = ""
 
-    # Quét khối <TTKhac> trước để lấy phần thông tin phụ trợ tra cứu
-    ttkhac_match = re.search(r'<TTKhac[^\\s>]*?>([\\s\\S]*?)</TTKhac[^>]*?>', xml_content, re.IGNORECASE)
-    search_zone = ttkhac_match.group(1) if ttkhac_match else xml_content
+    def normalize_key(s: str) -> str:
+        if not s:
+            return ""
+        s = s.lower()
+        vietnamese_map = {
+            'à': 'a', 'á': 'a', 'ả': 'a', 'ã': 'a', 'ạ': 'a',
+            'ă': 'a', 'ằ': 'a', 'ắ': 'a', 'ẳ': 'a', 'ẵ': 'a', 'ặ': 'a',
+            'â': 'a', 'ầ': 'a', 'ấ': 'a', 'ẩ': 'a', 'ẫ': 'a', 'ậ': 'a',
+            'è': 'e', 'é': 'e', 'ẻ': 'e', 'ẽ': 'e', 'ẹ': 'e',
+            'ê': 'e', 'ề': 'e', 'ế': 'e', 'ể': 'e', 'ễ': 'e', 'ệ': 'e',
+            'ì': 'i', 'í': 'i', 'ỉ': 'i', 'ĩ': 'i', 'ị': 'i',
+            'ò': 'o', 'ó': 'o', 'ỏ': 'o', 'õ': 'o', 'ọ': 'o',
+            'ô': 'o', 'ồ': 'o', 'ố': 'o', 'ổ': 'o', 'ỗ': 'o', 'ộ': 'o',
+            'ơ': 'o', 'ờ': 'o', 'ớ': 'o', 'ở': 'o', 'ỡ': 'o', 'ợ': 'o',
+            'ù': 'u', 'ú': 'u', 'ủ': 'u', 'ũ': 'u', 'ụ': 'u',
+            'ư': 'u', 'ừ': 'u', 'ứ': 'u', 'ử': 'u', 'ữ': 'u', 'ự': 'u',
+            'ỳ': 'y', 'ý': 'y', 'ỷ': 'y', 'ỹ': 'y', 'ỵ': 'y',
+            'đ': 'd'
+        }
+        for k, v in vietnamese_map.items():
+            s = s.replace(k, v)
+        return "".join(c for c in s if c.isalnum())
 
-    web_keys = ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link", "portallink", "portal_link", "portal", "trang_tc"]
-    code_keys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "co_quan_thue", "tc_code", "ma_bmat"]
+    # Dùng xml.etree.ElementTree bóc tách rễ để loại trừ Chữ ký số xmldsig & tránh Regex sai lệch
+    try:
+        # ET.fromstring tự xử lý tương thích bảng mã dạng bytes
+        root_el = ET.fromstring(xml_content.encode('utf-8', errors='ignore'))
+        all_nodes = list(root_el.iter())
 
-    def extract_from_zone(zone_text: str):
-        nonlocal code, website
-        # 1. Quét các khối thẻ <TTin> (chứa TTruong và DLieu) để bóc tách động
-        ttin_blocks = re.findall(r'<TTin[^\\s>]*?>([\\s\\S]*?)</TTin[^>]*?>', zone_text, re.IGNORECASE)
-        for block in ttin_blocks:
-            ttruong_m = re.search(r'<TTruong[^\\s>]*?>([^<]+)</TTruong[^>]*?>', block, re.IGNORECASE)
-            dlieu_m = re.search(r'<DLieu[^\\s>]*?>([^<]+)</DLieu[^>]*?>', block, re.IGNORECASE)
-            if ttruong_m and dlieu_m:
-                key = ttruong_m.group(1).strip().lower()
-                val = dlieu_m.group(1).strip()
-                if any(x in key for x in web_keys):
-                    if not website:
-                        website = val
-                if any(x in key for x in code_keys):
-                    if not code:
-                        code = val
-
-            # Thử tìm dạng Key/Value
-            key_m = re.search(r'<Key[^\\s>]*?>([^<]+)</Key[^>]*?>', block, re.IGNORECASE)
-            val_m = re.search(r'<Value[^\\s>]*?>([^<]+)</Value[^>]*?>', block, re.IGNORECASE)
-            if key_m and val_m:
-                key = key_m.group(1).strip().lower()
-                val = val_m.group(1).strip()
-                if any(x in key for x in web_keys):
-                    if not website:
-                        website = val
-                if any(x in key for x in code_keys):
-                    if not code:
-                        code = val
-
-    # Thử tìm trong khối <TTKhac> trước
-    extract_from_zone(search_zone)
-
-    # Fallback: Quét toàn bộ nội dung xml_content nếu chưa có đầy đủ thông tin
-    if not code or not website:
-        extract_from_zone(xml_content)
-
-    # 2. Nếu chưa thấy, dùng các biểu thức chính quy (Regex) trực tiếp trên toàn bộ nội dung
-    if not code:
-        code_patterns = [
-            r'<MTC[^\\s>]*?>([^<]+)</MTC[^>]*?>',
-            r'<MaTraCuu[^\\s>]*?>([^<]+)</MaTraCuu[^>]*?>',
-            r'<MaTraCuuHDon[^\\s>]*?>([^<]+)</MaTraCuuHDon[^>]*?>',
-            r'<MTCHDon[^\\s>]*?>([^<]+)</MTCHDon[^>]*?>',
-            r'<MaTraCuuHD[^\\s>]*?>([^<]+)</MaTraCuuHD[^>]*?>',
-            r'<Fkey[^\\s>]*?>([^<]+)</Fkey[^>]*?>',
-            r'<F_key[^\\s>]*?>([^<]+)</F_key[^>]*?>',
-            r'<SecretKey[^\\s>]*?>([^<]+)</SecretKey[^>]*?>',
-            r'<Secret_Key[^\\s>]*?>([^<]+)</Secret_Key[^>]*?>',
-            r'<MaBiMat[^\\s>]*?>([^<]+)</MaBiMat[^>]*?>'
-        ]
-        for pattern in code_patterns:
-            match = re.search(pattern, xml_content, re.IGNORECASE)
-            if match:
-                code = match.group(1).strip()
+        # 1. Trích xuất MSTTCGP từ thẻ MSTTCGP nằm trong phần thông tin chung
+        for node in all_nodes:
+            lname = node.tag.split('}')[-1]
+            if lname == "MSTTCGP" and node.text:
+                msttcgp = node.text.strip()
                 break
 
-    if not website:
-        web_patterns = [
-            r'<LinkTraCuu[^\\s>]*?>([^<]+)</LinkTraCuu[^>]*?>',
-            r'<TrangWebTraCuu[^\\s>]*?>([^<]+)</TrangWebTraCuu[^>]*?>',
-            r'<URLTraCuu[^\\s>]*?>([^<]+)</URLTraCuu[^>]*?>',
-            r'<TrangWeb[^\\s>]*?>([^<]+)</TrangWeb[^>]*?>',
-            r'<Link[^\\s>]*?>([^<]+)</Link[^>]*?>',
-            r'<PortalLink[^\\s>]*?>([^<]+)</PortalLink[^>]*?>',
-            r'<Portal_Link[^\\s>]*?>([^<]+)</Portal_Link[^>]*?>'
-        ]
-        for pattern in web_patterns:
-            match = re.search(pattern, xml_content, re.IGNORECASE)
-            if match:
-                website = match.group(1).strip()
+        # Loại bỏ thông tin người bán NBan và người mua NMua để tránh bốc nhầm link web nội bộ của họ
+        nodes_to_skip = set()
+        def mark_skip(elem, skip=False):
+            lname = elem.tag.split('}')[-1]
+            current_skip = skip or (lname in ["NBan", "NMua"])
+            if current_skip:
+                nodes_to_skip.add(elem)
+            for child in elem:
+                mark_skip(child, current_skip)
+        
+        mark_skip(root_el)
+
+        valid_nodes = [n for n in all_nodes if n not in nodes_to_skip]
+
+        # 2. Tìm kiếm trong các node hợp lệ
+        ttin_blocks = [n for n in valid_nodes if n.tag.split('}')[-1] == "TTin"]
+        
+        web_keys = ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link", "portallink", "portal_link", "portal", "trang_tc"]
+        code_keys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "ma_bmat"]
+
+        def is_valid_lookup_url(url: str) -> bool:
+            if not url:
+                return False
+            low = url.lower()
+            bad_keywords = ["w3.org", "xmldsig", "schema", "xml", "uri:", "namespace", "tempuri.org", "purl.org"]
+            if any(x in low for x in bad_keywords):
+                return False
+            return True
+
+        # BIẾN KIỂM SOÁT QUÉT ĐỘNG THEO LUẬT NHÀ CUNG CẤU CẤU HÌNH
+        dynamic_rule_active = False
+        dynamic_matched_code = False
+        
+        if msttcgp and msttcgp in provider_mapping:
+            rule = provider_mapping[msttcgp]
+            key_type = rule.get("key_type")
+            key_name = rule.get("key_name")
+            if key_type and key_name:
+                dynamic_rule_active = True
+                website = rule["website"]
+                
+                for block in ttin_blocks:
+                    if key_type == "TTruong":
+                        # Với TTruong: Tìm thẻ con TTruong có text khớp với key_name (không phân biệt chữ hoa chữ thường)
+                        ttruong_elem = next((ch for ch in block if ch.tag.split('}')[-1] == 'TTruong'), None)
+                        dlieu_elem = next((ch for ch in block if ch.tag.split('}')[-1] == 'DLieu'), None)
+                        if ttruong_elem is not None and dlieu_elem is not None and ttruong_elem.text:
+                            raw_t = ttruong_elem.text.strip()
+                            if raw_t.lower() == key_name.lower() or normalize_key(raw_t) == normalize_key(key_name):
+                                if dlieu_elem.text:
+                                    code = dlieu_elem.text.strip()
+                                    dynamic_matched_code = True
+                                    break
+                    elif key_type == "Id":
+                        # Với Id: Tìm thẻ TTin nào có thuộc tính Id khớp với key_name
+                        if block.attrib.get('Id') == key_name:
+                            dlieu_elem = next((ch for ch in block if ch.tag.split('}')[-1] == 'DLieu'), None)
+                            if dlieu_elem is not None and dlieu_elem.text:
+                                code = dlieu_elem.text.strip()
+                                dynamic_matched_code = True
+                                break
+                
+                if dynamic_matched_code:
+                    print(f"[Engine Quét Động] Đã trích xuất mã [{code}] thành công theo luật {key_type} (KeyName: {key_name}) của nhà cung cấp có MST {msttcgp}")
+                else:
+                    status = "rejected"
+                    error_desc = "Khong tim thay ma tra cuu rieng theo quy tac tinh hop le cua the <TTKhac>"
+                    print(f"[Engine Quet Dong] {error_desc}")
+
+        if not dynamic_rule_active:
+            # Ap dung thuat toan Heuristic doan dong ma tra cuu truoc tien (Viet comment bang tieng Viet khong dau)
+            heuristic_res = heuristic_extract_lookup_code(root_el)
+            if heuristic_res["status"] == "success":
+                code = heuristic_res["ma_tra_cuu"]
+                print(f"[Heuristic Python] Da tu dong nhan dien ma tra cuu: [{code}] voi ten truong '{heuristic_res['key_name']}'")
+
+            # Trich xuat tu cac khoi TTin theo giai phap tu dong da tang khi khong co luat rieng (chi giu lai website)
+            for block in ttin_blocks:
+                ttruong = ""
+                dlieu = ""
+                key_val = ""
+                val_val = ""
+                for child in block:
+                    lname = child.tag.split('}')[-1]
+                    if lname == "TTruong" and child.text:
+                        ttruong = child.text.strip().lower()
+                    elif lname == "DLieu" and child.text:
+                        # Loai tru Chu ky so: khi noi dung co xmldsig, bo qua ngay!
+                        if "xmldsig" in child.text.lower():
+                            continue
+                        dlieu = child.text.strip()
+                    elif lname == "Key" and child.text:
+                        key_val = child.text.strip().lower()
+                    elif lname == "Value" and child.text:
+                        if child.text and "xmldsig" in child.text.lower():
+                            continue
+                        val_val = child.text.strip()
+                
+                if ttruong and dlieu:
+                    norm_ttruong = normalize_key(ttruong)
+                    if any(normalize_key(k) in norm_ttruong or norm_ttruong in normalize_key(k) for k in web_keys) and is_valid_lookup_url(dlieu):
+                        if not website:
+                            website = dlieu
+
+                if key_val and val_val:
+                    norm_key = normalize_key(key_val)
+                    if any(normalize_key(k) in norm_key or norm_key in normalize_key(k) for k in web_keys) and is_valid_lookup_url(val_val):
+                        if not website:
+                            website = val_val
+
+        # Nếu không có TTin hoặc chưa tìm được, tìm trong các node có cấu trúc thẻ trực tiếp
+        if not website:
+            for node in valid_nodes:
+                lname = node.tag.split('}')[-1]
+                if lname in ["LinkTraCuu", "TrangWebTraCuu", "URLTraCuu", "TrangWeb", "Link", "PortalLink", "Portal_Link"] and node.text:
+                    val = node.text.strip()
+                    if is_valid_lookup_url(val):
+                        website = val
+                        break
+
+        if not code:
+            for node in valid_nodes:
+                lname = node.tag.split('}')[-1]
+                if lname in ["MTC", "MaTraCuu", "MaTraCuuHDon", "MTCHDon", "MaTraCuuHD", "Fkey", "F_key", "SecretKey", "Secret_Key", "MaBiMat"] and node.text:
+                    code = node.text.strip()
+                    break
+
+        # 3. Phục hồi link tra cứu theo MST Nhà cung cấp (Fallback)
+        if not website:
+            if msttcgp and msttcgp in provider_mapping:
+                website = provider_mapping[msttcgp]["website"]
+                print(f"[Fallback] Đã lấy được link {website} cho MST giải pháp {msttcgp} từ file cơ sở dữ liệu.")
+            else:
+                status = "invalid"
+                # Ngừng tiến trình file này nếu không tìm thấy nhà cung cấp tương thích
+                error_desc = "[LỖI] Không tìm thấy nhà cung cấp dịch vụ tương thích cho Mã số thuế doanh nghiệp giải pháp này."
+                print(f"[LỖI] Không tìm thấy nhà cung cấp dịch vụ tương thích cho Mã số thuế {msttcgp} cho file {file_name}")
+
+        # 4. Khi đã gán được Link tra cứu, tiếp tục tìm Mã tra cứu (ví dụ TransactionID cho MISA) nếu có trong cấu hình
+        if website and status == "valid" and not code:
+            if msttcgp and msttcgp in provider_mapping:
+                provider = provider_mapping[msttcgp]
+                if provider.get("codeTag"):
+                    target_tag = provider["codeTag"]
+                    for block in ttin_blocks:
+                        ttruong = ""
+                        dlieu = ""
+                        for child in block:
+                            lname = child.tag.split('}')[-1]
+                            if lname == "TTruong" and child.text:
+                                ttruong = child.text.strip().lower()
+                            elif lname == "DLieu" and child.text:
+                                dlieu = child.text.strip()
+                        if ttruong == target_tag.lower() and dlieu:
+                            code = dlieu
+                            break
+
+    except Exception as parse_err:
+        print(f"[CẢNH BÁO] Không thể parse XML {file_name} bằng ElementTree ({parse_err}). Chuyển sang quét bằng Regex.")
+        # Regex dự phòng khi file lỗi cấu trúc XML
+        msttcgp_m = re.search(r'<MSTTCGP[^>]*?>([^<]+)</MSTTCGP>', xml_content, re.IGNORECASE)
+        msttcgp = msttcgp_m.group(1).strip() if msttcgp_m else ""
+        
+        # Loại bỏ người bán/mua
+        clean_xml = re.sub(r'<NBan[^>]*?>([\s\S]*?)</NBan[^>]*?>', '', xml_content, flags=re.IGNORECASE)
+        clean_xml = re.sub(r'<NMua[^>]*?>([\s\S]*?)</NMua[^>]*?>', '', clean_xml, flags=re.IGNORECASE)
+
+        # Trích xuất
+        ttkhac_match = re.search(r'<TTKhac[^>]*?>([\s\S]*?)</TTKhac>', clean_xml, re.IGNORECASE)
+        search_zone = ttkhac_match.group(1) if ttkhac_match else clean_xml
+
+        # Quét URL
+        urls_found = re.findall(r'https?://[^\s<"]+', search_zone, re.IGNORECASE)
+        for url in urls_found:
+            def is_url_valid(u: str) -> bool:
+                low = u.lower()
+                return not any(b in low for b in ["w3.org", "xmldsig", "schema", "xml", "uri:", "namespace", "tempuri.org", "purl.org"])
+            if is_url_valid(url):
+                website = url.strip()
                 break
 
-    # Nếu vẫn chưa tìm thấy link, quét xem có URL http/https nào trong xml_content không
-    if not website:
-        url_match = re.search(r'https?://[^\\s<"]+', xml_content, re.IGNORECASE)
-        if url_match:
-            website = url_match.group(0).strip()
+        # Săn mã tra cứu
+        for pat in [r'<MTC[^>]*?>([^<]+)</MTC>', r'<MaTraCuu[^>]*?>([^<]+)</MaTraCuu>', r'<Fkey[^>]*?>([^<]+)</Fkey>']:
+            m = re.search(pat, search_zone, re.IGNORECASE)
+            if m:
+                code = m.group(1).strip()
+                break
 
-    # 3. Chuẩn hóa đường dẫn website tra cứu để an toàn
+        if not website and msttcgp and msttcgp in provider_mapping:
+            website = provider_mapping[msttcgp]["website"]
+
+        if website and msttcgp and msttcgp in provider_mapping and not code:
+            provider = provider_mapping[msttcgp]
+            if provider.get("codeTag"):
+                # Dùng Regex săn codeTag đặc thù
+                tag = provider["codeTag"]
+                m = re.search(rf'<{tag}[^>]*?>([^<]+)</{tag}>', clean_xml, re.IGNORECASE)
+                if m:
+                    code = m.group(1).strip()
+
     if website:
         if not website.lower().startswith("http"):
             website = "https://" + website
 
-    if not code:
-        status = "invalid"
-        error_desc = "Không tìm thấy mã tra cứu trong thẻ <TTKhac>."
+    if status == "valid" and not code:
+        status = "rejected"
+        error_desc = "Khong tim thay ma tra cuu rieng theo quy tac tinh hop le cua the <TTKhac>"
 
     # Kiểm tra hóa đơn hủy hoặc thay thế bằng việc tìm kiếm từ khóa trong chuỗi XML
     lower_content = xml_content.lower()

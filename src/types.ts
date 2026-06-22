@@ -5,7 +5,7 @@ export interface InvoiceData {
   website: string;
   code: string; // Mã tra cứu trích xuất từ thẻ <TTKhac>
   invoiceType: 'new' | 'replaced' | 'canceled' | 'unknown';
-  status: 'valid' | 'invalid' | 'warning';
+  status: 'valid' | 'invalid' | 'warning' | 'rejected';
   errorDescription?: string;
   processedStatus: 'idle' | 'processing' | 'success' | 'failed' | 'captcha_required';
   pdfUrl?: string; // URL để tải file PDF sau khi lấy thành công

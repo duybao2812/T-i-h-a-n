@@ -49,11 +49,36 @@ def parse_xml_invoice(xml_content: str, file_name: str):
     error_desc = ""
 
     # Quét khối <TTKhac> trước để lấy phần thông tin phụ trợ tra cứu
-    ttkhac_match = re.search(r'<TTKhac[^\\\\s>]*?>([\\\\s\\\\S]*?)</TTKhac[^>]*?>', xml_content, re.IGNORECASE)
-    search_zone = ttkhac_match.group(1) if ttkhac_match else xml_content
+    msttcgp_match = re.search(r'<MSTTCGP[^\\\\s>]*?>([^<]+)</MSTTCGP[^>]*?>', xml_content, re.IGNORECASE)
+    msttcgp = msttcgp_match.group(1).strip() if msttcgp_match else ""
+
+    provider_mapping = {
+        "0101243150": {
+            "name": "MISA (meInvoice)",
+            "website": "https://www.meinvoice.vn/tra-cuu/",
+            "codeTag": "TransactionID"
+        }
+    }
+
+    # Loại bỏ thông tin người bán NBan và người mua NMua để tránh trích xuất nhầm website nội bộ của họ
+    clean_xml = re.sub(r'<NBan[^>]*?>([\\s\\S]*?)</NBan[^>]*?>', '', xml_content, flags=re.IGNORECASE)
+    clean_xml = re.sub(r'<NMua[^>]*?>([\\s\\S]*?)</NMua[^>]*?>', '', clean_xml, flags=re.IGNORECASE)
+
+    ttkhac_match = re.search(r'<TTKhac[^\\\\s>]*?>([\\\\s\\\\S]*?)</TTKhac[^>]*?>', clean_xml, re.IGNORECASE)
+    search_zone = ttkhac_match.group(1) if ttkhac_match else clean_xml
 
     web_keys = ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link", "portallink", "portal_link", "portal", "trang_tc"]
     code_keys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "co_quan_thue", "tc_code", "ma_bmat"]
+
+    def is_valid_lookup_url(url: str) -> bool:
+        if not url:
+            return False
+        low = url.toLowerCase() if hasattr(url, "toLowerCase") else url.lower()
+        # Loại bỏ các liên kết xmlns định dạng cấu trúc ký số hoặc namespace hệ thống
+        bad_keywords = ["w3.org", "xmldsig", "schema", "xml", "uri:", "namespace", "tempuri.org", "purl.org"]
+        if any(x in low for x in bad_keywords):
+            return False
+        return True
 
     def extract_from_zone(zone_text: str):
         nonlocal code, website
@@ -61,12 +86,12 @@ def parse_xml_invoice(xml_content: str, file_name: str):
         ttin_blocks = re.findall(r'<TTin[^\\\\s>]*?>([\\\\s\\\\S]*?)</TTin[^>]*?>', zone_text, re.IGNORECASE)
         for block in ttin_blocks:
             ttruong_m = re.search(r'<TTruong[^\\\\s>]*?>([^<]+)</TTruong[^>]*?>', block, re.IGNORECASE)
-            dlieu_m = re.search(r'<DLieu[^\\\\s>]*?>([^<]+)</DLieu[^>]*?>', block, re.IGNORECASE)
+            dlieu_m = re.search(r'<DLieu[^]*?>([^<]+)</DLieu[^>]*?>', block, re.IGNORECASE)
             if ttruong_m and dlieu_m:
                 key = ttruong_m.group(1).strip().lower()
                 val = dlieu_m.group(1).strip()
                 if any(x in key for x in web_keys):
-                    if not website:
+                    if not website and is_valid_lookup_url(val):
                         website = val
                 if any(x in key for x in code_keys):
                     if not code:
@@ -79,7 +104,7 @@ def parse_xml_invoice(xml_content: str, file_name: str):
                 key = key_m.group(1).strip().lower()
                 val = val_m.group(1).strip()
                 if any(x in key for x in web_keys):
-                    if not website:
+                    if not website and is_valid_lookup_url(val):
                         website = val
                 if any(x in key for x in code_keys):
                     if not code:
@@ -88,9 +113,9 @@ def parse_xml_invoice(xml_content: str, file_name: str):
     # Thử tìm trong khối <TTKhac> trước
     extract_from_zone(search_zone)
 
-    # Fallback: Quét toàn bộ nội dung xml_content nếu chưa có đầy đủ thông tin
+    # Fallback: Quét toàn bộ nội dung clean_xml nếu chưa có đầy đủ thông tin
     if not code or not website:
-        extract_from_zone(xml_content)
+        extract_from_zone(clean_xml)
 
     # 2. Nếu chưa thấy, dùng các biểu thức chính quy (Regex) trực tiếp trên toàn bộ nội dung
     if not code:
@@ -107,7 +132,7 @@ def parse_xml_invoice(xml_content: str, file_name: str):
             r'<MaBiMat[^\\\\s>]*?>([^<]+)</MaBiMat[^>]*?>'
         ]
         for pattern in code_patterns:
-            match = re.search(pattern, xml_content, re.IGNORECASE)
+            match = re.search(pattern, clean_xml, re.IGNORECASE)
             if match:
                 code = match.group(1).strip()
                 break
@@ -123,16 +148,35 @@ def parse_xml_invoice(xml_content: str, file_name: str):
             r'<Portal_Link[^\\\\s>]*?>([^<]+)</Portal_Link[^>]*?>'
         ]
         for pattern in web_patterns:
-            match = re.search(pattern, xml_content, re.IGNORECASE)
-            if match:
+            match = re.search(pattern, clean_xml, re.IGNORECASE)
+            if match and match.group(1) and is_valid_lookup_url(match.group(1).strip()):
                 website = match.group(1).strip()
                 break
 
-    # Nếu vẫn chưa tìm thấy link, quét xem có URL http/https nào trong xml_content không
+    # Nếu vẫn chưa tìm thấy link, quét xem có URL http/https nào trong clean_xml không
     if not website:
-        url_match = re.search(r'https?://[^\\\\s<"]+', xml_content, re.IGNORECASE)
-        if url_match:
-            website = url_match.group(0).strip()
+        urls_found = re.findall(r'https?://[^\\\\s<"]+', clean_xml, re.IGNORECASE)
+        for url in urls_found:
+            trimmed_url = url.strip()
+            if is_valid_lookup_url(trimmed_url):
+                website = trimmed_url;
+                break
+
+    # Áp dụng cơ chế bổ sung theo MST nhà cung cấp (Ví dụ: MISA)
+    if msttcgp and msttcgp in provider_mapping:
+        provider = provider_mapping[msttcgp]
+        if not website:
+            website = provider["website"]
+        if not code and "codeTag" in provider:
+            target_tag = provider["codeTag"]
+            ttin_blocks = re.findall(r'<TTin[^\\\\s>]*?>([\\\\s\\\\S]*?)</TTin[^>]*?>', clean_xml, re.IGNORECASE)
+            for block in ttin_blocks:
+                ttruong_m = re.search(r'<TTruong[^\\\\s>]*?>([^<]+)</TTruong[^>]*?>', block, re.IGNORECASE)
+                dlieu_m = re.search(r'<DLieu[^\\\\s>]*?>([^<]+)</DLieu[^>]*?>', block, re.IGNORECASE)
+                if ttruong_m and dlieu_m:
+                    if ttruong_m.group(1).strip().lower() == target_tag.lower():
+                        code = dlieu_m.group(1).strip()
+                        break
 
     # 3. Chuẩn hóa đường dẫn website tra cứu để an toàn
     if website:
@@ -141,7 +185,7 @@ def parse_xml_invoice(xml_content: str, file_name: str):
 
     if not code:
         status = "invalid"
-        error_desc = "Không tìm thấy mã tra cứu trong thẻ <TTKhac>."
+        error_desc = "Không tìm thấy mã tra cứu hóa đơn."
 
     # Kiểm tra hóa đơn hủy hoặc thay thế bằng việc tìm kiếm từ khóa trong chuỗi XML
     lower_content = xml_content.lower()
