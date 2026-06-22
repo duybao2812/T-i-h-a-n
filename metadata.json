@@ -1,0 +1,6 @@
+{
+  "name": "Trình Tải Hóa Đơn PDF Tự Động",
+  "description": "Hệ thống tự động hóa dọc file XML hóa đơn, trích xuất mã tra cứu từ <TTKhac>, kiểm tra trạng thái và tải file PDF tương ứng sử dụng Playwright và giao diện trực quan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
