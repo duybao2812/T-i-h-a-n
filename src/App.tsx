@@ -435,15 +435,27 @@ export default function App() {
   const errorFiles = invoiceFiles.filter(f => f.status === "invalid").length;
   const cancelOrReplacedFiles = invoiceFiles.filter(f => f.invoiceType === "canceled" || f.invoiceType === "replaced").length;
 
-  const handleDownloadPythonZip = () => {
-    addLog("Đang tải tệp ZIP chứa đầy đủ mã nguồn Python cho Localhost...", "info");
-    const a = document.createElement("a");
-    a.href = "/XML_Invoice_Downloader_Local.zip";
-    a.download = "XML_Invoice_Downloader_Local.zip";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    addLog("Bản tải về tệp ZIP 'XML_Invoice_Downloader_Local.zip' đã được gửi trực tiếp tới trình duyệt của bạn.", "success");
+  const handleDownloadPythonZip = async () => {
+    addLog("Đang kết nối để biên dịch và tải tệp ZIP mã nguồn Python...", "info");
+    
+    try {
+      const response = await fetch("/api/download-python-code");
+      if (!response.ok) throw new Error("Network response was not ok");
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "XML_Invoice_Downloader_Local.zip";
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      addLog("Bản tải về tệp ZIP 'XML_Invoice_Downloader_Local.zip' đã được dịch và gửi trực tiếp tới trình duyệt của bạn.", "success");
+    } catch (err) {
+      addLog(`Lỗi tải mã nguồn Python: ${err}`, "error");
+    }
   };
 
   return (

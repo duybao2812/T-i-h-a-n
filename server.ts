@@ -1001,10 +1001,11 @@ Mở trình duyệt web của bạn và đăng nhập vào đường link: \`htt
 `;
     zip.file("README.md", readmeContent);
 
-    const base64Zip = await zip.generateAsync({ type: "base64" });
+    const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", "attachment; filename=XML_Invoice_Downloader_Local.zip");
-    return res.end(Buffer.from(base64Zip, "base64"));
+    res.setHeader("Content-Length", zipBuffer.length.toString());
+    return res.end(zipBuffer);
 
   } catch (error: any) {
     console.error("Lỗi tạo mã zip Python local:", error);
