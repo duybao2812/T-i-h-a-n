@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import JSZip from "jszip";
 
@@ -12,7 +11,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // API 1: Phân tích XML metadata gửi từ client
 // Client gửi lên danh sách { id, fileName, fileContent }
-app.post("/api/analyze-xml", (req, res) => {
+app.post(["/api/analyze-xml", "/analyze-xml"], (req, res) => {
   try {
     const { xmlFiles } = req.body;
     if (!Array.isArray(xmlFiles)) {
@@ -131,7 +130,7 @@ app.post("/api/analyze-xml", (req, res) => {
 });
 
 // API 2: Tải code Python Local dạng ZIP hoàn chỉnh theo yêu cầu của người dùng
-app.get("/api/download-python-code", async (req, res) => {
+app.get(["/api/download-python-code", "/download-python-code"], async (req, res) => {
   try {
     const zip = new JSZip();
 
@@ -1000,7 +999,7 @@ Mở trình duyệt web của bạn và đăng nhập vào đường link: \`htt
     const base64Zip = await zip.generateAsync({ type: "base64" });
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", "attachment; filename=XML_Invoice_Downloader_Local.zip");
-    return res.send(Buffer.from(base64Zip, "base64"));
+    return res.end(Buffer.from(base64Zip, "base64"));
 
   } catch (error: any) {
     console.error("Lỗi tạo mã zip Python local:", error);
@@ -1044,7 +1043,7 @@ app.post("/api/download-single", async (req, res) => {
   }
 });
 
-app.post("/api/resume-download-with-captcha", (req, res) => {
+app.post(["/api/resume-download-with-captcha", "/resume-download-with-captcha"], (req, res) => {
   const { sessionId, captchaSolution, fileName, code, website, saveDir } = req.body;
   return res.json({
     status: "success",
@@ -1054,7 +1053,7 @@ app.post("/api/resume-download-with-captcha", (req, res) => {
 });
 
 // Endpoint trả về tệp tin PDF trực tuyến chất lượng cao
-app.get("/api/get-pdf", (req, res) => {
+app.get(["/api/get-pdf", "/get-pdf"], (req, res) => {
   const { code, fileName } = req.query;
   const safeFileName = (fileName as string || "invoice.pdf").replace(".xml", ".pdf").replace(".XML", ".pdf");
   
@@ -1084,6 +1083,7 @@ app.get("/api/get-pdf", (req, res) => {
 // Vite middleware setup
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
