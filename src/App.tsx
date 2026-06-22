@@ -435,18 +435,28 @@ export default function App() {
   const errorFiles = invoiceFiles.filter(f => f.status === "invalid").length;
   const cancelOrReplacedFiles = invoiceFiles.filter(f => f.invoiceType === "canceled" || f.invoiceType === "replaced").length;
 
-  const handleDownloadPythonZip = () => {
-    addLog("Đang khởi tạo tải xuống tệp ZIP mã nguồn Python...", "info");
+  const handleDownloadPythonZip = async () => {
+    addLog("Đang biên dịch và tải tệp ZIP mã nguồn Python từ server...", "info");
     
     try {
+      const response = await fetch("/api/download-python-code");
+      if (!response.ok) {
+        throw new Error("Không thể tải mã nguồn");
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      
       const a = document.createElement("a");
-      a.href = "XML_Invoice_Downloader_Local.zip";
+      a.href = url;
       a.download = "XML_Invoice_Downloader_Local.zip";
       document.body.appendChild(a);
       a.click();
+      
+      window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       
-      addLog("Bản tải về tệp ZIP 'XML_Invoice_Downloader_Local.zip' đã chuyển hoàn tất. Vui lòng kiểm tra thư mục máy tính của bạn.", "success");
+      addLog("Bản tải về tệp ZIP mã nguồn Python đã sẵn sàng và được gửi tới trình duyệt của bạn.", "success");
     } catch (err) {
       addLog(`Lỗi tải xuống mã nguồn Python: ${err}`, "error");
     }
