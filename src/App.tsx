@@ -436,8 +436,13 @@ export default function App() {
   const cancelOrReplacedFiles = invoiceFiles.filter(f => f.invoiceType === "canceled" || f.invoiceType === "replaced").length;
 
   const handleDownloadPythonZip = () => {
-    addLog("Đang đóng gói và khởi tạo tệp ZIP chứa đầy đủ mã nguồn Python cho Localhost...", "info");
-    window.open("/api/download-python-code", "_blank");
+    addLog("Đang tải tệp ZIP chứa đầy đủ mã nguồn Python cho Localhost...", "info");
+    const a = document.createElement("a");
+    a.href = "/XML_Invoice_Downloader_Local.zip";
+    a.download = "XML_Invoice_Downloader_Local.zip";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
     addLog("Bản tải về tệp ZIP 'XML_Invoice_Downloader_Local.zip' đã được gửi trực tiếp tới trình duyệt của bạn.", "success");
   };
 
