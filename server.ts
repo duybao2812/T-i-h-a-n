@@ -141,9 +141,15 @@ const handleDownloadZipRequest = async (req: any, res: any) => {
 
     for (const filePath of possiblePaths) {
       if (fs.existsSync(filePath)) {
-        res.setHeader("Content-Type", "application/zip");
-        res.setHeader("Content-Disposition", "attachment; filename=XML_Invoice_Downloader_Local.zip");
-        return res.sendFile(filePath);
+        try {
+          const fileBuffer = fs.readFileSync(filePath);
+          res.setHeader("Content-Type", "application/zip");
+          res.setHeader("Content-Disposition", "attachment; filename=XML_Invoice_Downloader_Local.zip");
+          res.setHeader("Content-Length", fileBuffer.length.toString());
+          return res.send(fileBuffer);
+        } catch (readError) {
+          console.warn("Không thể đọc tệp zip tĩnh trực tiếp, chuyển sang nén động:", readError);
+        }
       }
     }
 
@@ -1021,7 +1027,7 @@ Mở trình duyệt web của bạn và đăng nhập vào đường link: \`htt
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", "attachment; filename=XML_Invoice_Downloader_Local.zip");
     res.setHeader("Content-Length", zipBuffer.length.toString());
-    return res.end(zipBuffer);
+    return res.send(zipBuffer);
 
   } catch (error: any) {
     console.error("Lỗi tạo mã zip Python local:", error);
