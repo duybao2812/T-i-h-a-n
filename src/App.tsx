@@ -19,6 +19,7 @@ import {
   Check
 } from "lucide-react";
 import { InvoiceData, LogEntry, AppSettings } from "./types";
+import { generateAndDownloadPythonZip } from "./lib/pythonToolGen";
 
 export default function App() {
   // Trạng thái cấu hình mặc định đề xuất
@@ -438,11 +439,25 @@ export default function App() {
   const handleDownloadPythonZip = async () => {
     addLog("Đang tải tệp ZIP mã nguồn Python local...", "info");
     
-    // Thử cách 1: Tải trực tiếp tệp tĩnh /XML_Invoice_Downloader_Local.zip (Tối ưu nhất cho các nền tảng host tĩnh như Vercel)
+    // Thử cách 1: Biên dịch và đóng gói ZIP trực tiếp trên Trình Duyệt (100% Không Lỗi, hoạt động trên mọi host tĩnh như Vercel)
     try {
-      addLog("Thử tải tệp ZIP tĩnh trực tiếp từ CDN đầu tiên...", "info");
+      addLog("Bắt đầu khởi tạo biên dịch tệp ZIP trực tiếp trên trình duyệt của bạn...", "info");
+      const clientBuildSuccess = await generateAndDownloadPythonZip(addLog);
+      if (clientBuildSuccess) {
+        return;
+      }
+      addLog("Tải trực tiếp bằng Client thất bại, chuyển sang phương pháp tải tệp tĩnh...", "warning");
+    } catch (clientErr: any) {
+      addLog(`Lỗi xử lý nén trên trình duyệt: ${clientErr.message || clientErr}. Đang chuyển sang phương pháp tải tệp tĩnh...`, "warning");
+    }
+    
+    // Thử cách 2: Tải trực tiếp tệp tĩnh /XML_Invoice_Downloader_Local.zip
+    try {
+      addLog("Thử tải tệp ZIP tĩnh trực tiếp từ CDN...", "info");
       const staticResponse = await fetch("/XML_Invoice_Downloader_Local.zip");
-      if (staticResponse.ok) {
+      // Kiểm tra kỹ tránh tải nhầm trang SPA fallback index.html
+      const contentType = staticResponse.headers.get("Content-Type") || "";
+      if (staticResponse.ok && !contentType.includes("html")) {
         const blob = await staticResponse.blob();
         const url = window.URL.createObjectURL(blob);
         
@@ -458,16 +473,17 @@ export default function App() {
         addLog("Tải tệp ZIP XML_Invoice_Downloader_Local.zip tĩnh thành công!", "success");
         return;
       }
-      throw new Error(`Mã phản hồi từ máy chủ không phải 200 OK (Status: ${staticResponse.status})`);
+      throw new Error(`Đường dẫn tệp tĩnh không hợp lệ hoặc trả về trang HTML fallback (Status: ${staticResponse.status}, Type: ${contentType})`);
     } catch (staticErr: any) {
-      addLog(`Tải tệp tĩnh thất bại (${staticErr.message || staticErr}). Thử cách 2: Gọi API phân giải động từ Server Node...`, "warning");
+      addLog(`Tải tệp tĩnh thất bại (${staticErr.message || staticErr}). Thử cách 3: Gọi API phân giải động từ Server Node...`, "warning");
     }
 
-    // Thử cách 2: Gọi API động '/api/download-python-code' từ Server Node
+    // Thử cách 3: Gọi API động '/api/download-python-code' từ Server Node
     try {
       const response = await fetch("/api/download-python-code");
-      if (!response.ok) {
-        throw new Error("Không thể tải mã nguồn từ API Server");
+      const contentType = response.headers.get("Content-Type") || "";
+      if (!response.ok || contentType.includes("html")) {
+        throw new Error(`Phản hồi kém hoặc trả về trang HTML fallback (Status: ${response.status}, Type: ${contentType})`);
       }
       
       const blob = await response.blob();
@@ -482,10 +498,10 @@ export default function App() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       
-      addLog("Bản tải về tệp ZIP mã nguồn Python đã sẵn sàng và được tải xuống thành công từ API server của bạn.", "success");
+      addLog("Bản tải về tệp ZIP mã nguồn Python đã sẵn sàng và được tải xuống thành công từ API server.", "success");
     } catch (err: any) {
-      addLog(`Lỗi tải xuống mã nguồn Python: ${err.message || err}`, "error");
-      addLog("Mẹo: Nếu cả hai cách đều bị lỗi (ví dụ do chính sách mạng Vercel), bạn có thể gõ thêm đuôi '/XML_Invoice_Downloader_Local.zip' trực tiếp vào sau địa chỉ URL trang web của bạn để tải về.", "warning");
+      addLog(`Lỗi tải xuống mã nguồn Python qua API: ${err.message || err}`, "error");
+      addLog("Khuyến nghị: Bạn có thể sao chép thư mục 'python-tools' từ mã nguồn để chạy trực tiếp trên máy hoặc liên hệ kỹ thuật để được hỗ trợ.", "warning");
     }
   };
 
@@ -539,8 +555,8 @@ export default function App() {
                 <button
                   onClick={async () => {
                     try {
-                      if (window.showDirectoryPicker) {
-                        const dirHandle = await window.showDirectoryPicker();
+                      if ((window as any).showDirectoryPicker) {
+                        const dirHandle = await (window as any).showDirectoryPicker();
                         setSettings({ ...settings, saveDir: `[TuTrinhDuyet]_${dirHandle.name}` });
                       } else {
                         alert("Trình duyệt của bạn không hỗ trợ tính năng chọn thư mục. Hãy nhập thủ công.");

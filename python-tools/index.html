@@ -177,4 +177,254 @@
 
             const logElement = document.createElement("p");
             logElement.className = color;
-            logElement.innerHTML = \`[\${time}] \${text}\
+            logElement.innerHTML = \`[\${time}] \${text}\`;
+            logArea.appendChild(logElement);
+            logArea.scrollTop = logArea.scrollHeight;
+        }
+
+        function clearLogs() {
+            logArea.innerHTML = "";
+            addLog("Đã dọn dẹp nhật ký hệ thống.", "system");
+        }
+
+        async function handleFiles(files) {
+            addLog(\`Đang nạp \${files.length} tệp XML hóa đơn...\`, "system");
+            const payloadFiles = [];
+
+            for (const file of files) {
+                if (file.name.toLowerCase().endsWith(".xml")) {
+                    const content = await readFileAsText(file);
+                    payloadFiles.push({
+                        fileName: file.name,
+                        fileContent: content,
+                        id: file.name
+                    });
+                } else {
+                    addLog(\`Bỏ qua tệp không phải sinh từ XML: \${file.name}\`, "warning");
+                }
+            }
+
+            if (payloadFiles.length === 0) return;
+
+            // Gọi API phân tích thông tin
+            try {
+                const response = await fetch("/api/analyze", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        files: payloadFiles,
+                        saveDir: document.getElementById("saveDir").value
+                    })
+                });
+                const data = await response.json();
+                
+                fileList = data.xmlFiles.map(f => ({
+                    ...f,
+                    processedStatus: f.status === "invalid" ? "failed" : "idle"
+                }));
+                
+                renderTable();
+                btnProcess.disabled = false;
+                addLog(\`Đã phân tích xong \${fileList.length} tệp XML hóa đơn. Sẵn sàng khởi động Playwright.\`, "success");
+            } catch (err) {
+                addLog(\`Phân tích XML lỗi: \${err.message}\`, "error");
+            }
+        }
+
+        function readFileAsText(file) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.readAsText(file, "utf-8");
+            });
+        }
+
+        function renderTable() {
+            document.getElementById("fileCount").innerText = \`\${fileList.length} tệp\`;
+            if (fileList.length === 0) {
+                invoiceTable.innerHTML = '<div class="text-center text-slate-500 py-8">Chưa có tệp XML nào.</div>';
+                return;
+            }
+
+            invoiceTable.innerHTML = fileList.map((f, index) => {
+                let badgeType = "";
+                let typeText = "Hóa Đơn Mới";
+                let statusBadge = "";
+
+                if (f.invoiceType === "canceled") {
+                    badgeType = "bg-rose-500/20 text-rose-400 border border-rose-500/30";
+                    typeText = "Hóa Đơn Hủy";
+                } else if (f.invoiceType === "replaced") {
+                    badgeType = "bg-amber-500/20 text-amber-400 border border-amber-500/30";
+                    typeText = "Hóa Đơn Thay Thế";
+                } else {
+                    badgeType = "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+                }
+
+                if (f.status === "invalid") {
+                    statusBadge = '<span class="text-rose-400 font-bold font-mono">BỊ LỖI</span>';
+                } else {
+                    if (f.processedStatus === "idle") statusBadge = '<span class="text-slate-400 font-mono">SẴN SÀNG</span>';
+                    else if (f.processedStatus === "processing") statusBadge = '<span class="text-blue-400 font-mono animate-pulse">ĐANG CHẠY...</span>';
+                    else if (f.processedStatus === "success") statusBadge = '<span class="text-teal-400 font-bold font-mono">ĐỒNG BỘ PDF</span>';
+                    else if (f.processedStatus === "failed") statusBadge = '<span class="text-rose-500 font-bold font-mono">THẤT BẠI</span>';
+                    else if (f.processedStatus === "captcha_required") statusBadge = '<span class="text-amber-500 font-bold font-mono">CẦN CAPTCHA</span>';
+                }
+
+                return \`
+                    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between p-3 bg-slate-900 border border-slate-800 rounded-lg gap-2">
+                        <div class="space-y-1">
+                            <div class="flex items-center gap-2">
+                                <span class="font-medium text-slate-200">\${f.fileName}</span>
+                                <span class="text-[10px] px-2 py-0.5 rounded-full \${badgeType}">\${typeText}</span>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-x-3 text-[10px] text-slate-400">
+                                <span>Mã tra cứu: <span class="font-mono text-emerald-400 font-semibold">\${f.code || "N/A"}</span></span>
+                                <span>Web tra cứu: <span class="font-mono font-semibold truncate max-w-[150px] inline-block">\${f.website}</span></span>
+                            </div>
+                            \${f.errorDescription ? \`<p class="text-[10px] text-rose-400 mt-1 font-sans">Lỗi trích xuất: \${f.errorDescription}</p>\` : ''}
+                        </div>
+                        <div class="flex items-center gap-3">
+                            \${statusBadge}
+                        </div>
+                    </div>
+                \`;
+            }).join("");
+        }
+
+        btnProcess.addEventListener("click", async () => {
+            btnProcess.disabled = true;
+            addLog("========================================= KHỞI ĐỘNG CHU TRÌNH TỰ ĐỘNG HÓA =========================================", "system");
+            
+            for (let i = 0; i < fileList.length; i++) {
+                currentlyProcessingIndex = i;
+                const file = fileList[i];
+
+                if (file.status === "invalid") {
+                    addLog(\`[LỖI] File [\${file.fileName}] không tìm thấy mã tra cứu trong thẻ &lt;TTKhac&gt;, bỏ qua và dừng xử lý file này.\`, "error");
+                    file.processedStatus = "failed";
+                    renderTable();
+                    continue;
+                }
+
+                if (file.invoiceType === "canceled") {
+                    addLog(\`[CẢNH BÁO] File [\${file.fileName}] là Hóa đơn đã bị hủy! Tiến hành phân loại đặc biệt.\`, "warning");
+                } else if (file.invoiceType === "replaced") {
+                    addLog(\`[CẢNH BÁO] File [\${file.fileName}] là Hóa đơn bị thay thế! Tiến hành phân loại đặc biệt.\`, "warning");
+                }
+
+                file.processedStatus = "processing";
+                renderTable();
+                addLog(\`Khởi chạy trình duyệt Playwright ngầm cho tệp [\${file.fileName}]...\`, "info");
+                
+                await downloadFilePDF(i);
+            }
+
+            btnProcess.disabled = false;
+            addLog("🎯 Báo cáo: Đã thực hiện hoàn tất danh kiểm hóa đơn XML!", "success");
+            alert("Đã thực hiện thành công xong toàn bộ danh sách hóa đơn!");
+        });
+
+        async function downloadFilePDF(index, isResumed = false, captchaValue = "") {
+            const file = fileList[index];
+            const saveDir = document.getElementById("saveDir").value;
+            const captchaMethod = document.getElementById("captchaMethod").value;
+            const apiKey2Captcha = document.getElementById("apiKey2Captcha").value;
+
+            try {
+                let url = "/api/download-single";
+                let formData = new FormData();
+                formData.append("fileName", file.fileName);
+                formData.append("code", file.code);
+                formData.append("website", file.website);
+                formData.append("saveDir", saveDir);
+                formData.append("captchaMethod", captchaMethod);
+                formData.append("apiKey2Captcha", apiKey2Captcha);
+
+                if (isResumed) {
+                    url = "/api/resume-download-with-captcha";
+                    formData = new FormData();
+                    formData.append("sessionId", activeSessionId);
+                    formData.append("captchaSolution", captchaValue);
+                    formData.append("fileName", file.fileName);
+                    formData.append("code", file.code);
+                    formData.append("website", file.website);
+                    formData.append("saveDir", saveDir);
+                }
+
+                const response = await fetch(url, {
+                    method: "POST",
+                    body: formData
+                });
+
+                const resData = await response.json();
+
+                if (resData.status === "captcha_required") {
+                    file.processedStatus = "captcha_required";
+                    renderTable();
+                    addLog(\`[YÊU CẦU CAPTCHA] Trang tra cứu yêu cầu mã giải tay cho file [\${file.fileName}]. Hiển thị giao diện giải captcha...\`, "warning");
+                    
+                    activeSessionId = resData.sessionId;
+                    document.getElementById("captchaImage").src = "data:image/png;base64," + resData.captchaImage;
+                    document.getElementById("captchaText").value = "";
+                    document.getElementById("captchaModal").classList.remove("hidden");
+                    
+                    // Treo luồng chờ người dùng nhập
+                    return new Promise((resolve) => {
+                        window.resolveCaptchaFlow = resolve;
+                    });
+                } else if (resData.status === "success" || response.ok) {
+                    file.processedStatus = "success";
+                    renderTable();
+                    addLog(\`🎉 [THÀNH CÔNG] File [\${file.fileName}] tải hóa đơn PDF lưu trực tiếp vào thư mục \${saveDir} thành công (Độc lập IDM).\`, "success");
+                } else {
+                    file.processedStatus = "failed";
+                    renderTable();
+                    addLog(\`[LỖI THẤT BẠI] File [\${file.fileName}] thất bại: \${resData.error || "Không hỗ trợ tra cứu trực tuyến tự động."}\`, "error");
+                }
+            } catch (err) {
+                file.processedStatus = "failed";
+                renderTable();
+                addLog(\`[LỖI HỆ THỐNG] Playwright lỗi kết nối cho [\${file.fileName}]: \s\${err.message}\`, "error");
+            }
+        }
+
+        async function submitCaptcha() {
+            const val = document.getElementById("captchaText").value.trim();
+            if (!val) {
+                alert("Vui lòng điền mã captcha hiển thị!");
+                return;
+            }
+            document.getElementById("captchaModal").classList.add("hidden");
+            addLog(\`Đang tải tiếp sau khi nhập mã Captcha: \${val}...\`, "info");
+            
+            if (currentlyProcessingIndex !== -1) {
+                await downloadFilePDF(currentlyProcessingIndex, true, val);
+                if (window.resolveCaptchaFlow) {
+                    window.resolveCaptchaFlow();
+                }
+            }
+        }
+
+        function skipCaptcha() {
+            document.getElementById("captchaModal").classList.add("hidden");
+            if (currentlyProcessingIndex !== -1) {
+                const file = fileList[currentlyProcessingIndex];
+                file.processedStatus = "failed";
+                renderTable();
+                addLog(\`[BỎ QUA] Skip file [\${file.fileName}] do bỏ qua mã Captcha.\`, "warning");
+                if (window.resolveCaptchaFlow) {
+                    window.resolveCaptchaFlow();
+                }
+            }
+        }
+    </script>
+</body>
+</html>
+`;
+
+    // Nén các file lại thành zip
+    zip.file("app.py", appPyContent);
+    zip.file("requirements.txt", requirementsContent);
+    zip.file("run.bat", runBatContent);
+    zip.file("index.html", indexHtmlContent);
