@@ -744,10 +744,26 @@ export default function App() {
 
       // Thực hiện gọi download.save_as() ngầm hoàn toàn độc lập, đảm bảo không bị IDM can thiệp
       addLog(`[DOWNLOAD] Đang gọi phương thức Playwright download.save_as() để kéo tệp tin PDF về thư mục lưu trữ cục bộ...`, "info");
-      await delay(2000);
+      await delay(1500);
 
       const targetPdfName = file.fileName.replace(/\.xml$/i, ".pdf");
-      addLog(`🎉 [THÀNH CÔNG] Đã lưu hóa đơn PDF gốc thành công: "${targetPdfName}" vào thư mục "${settings.saveDir}" (Hoàn toàn độc lập, an toàn trước IDM).`, "success");
+      
+      // Do giới hạn bảo mật Sandbox của trình duyệt Web khi chạy trực tiếp trực tuyến,
+      // Trình duyệt không thể ghi file thẳng vào ổ đĩa của bạn. Chúng tôi kích hoạt tải tệp về qua trình duyệt.
+      try {
+        const downloadUrl = `/api/get-pdf?code=${encodeURIComponent(file.code)}&fileName=${encodeURIComponent(file.fileName)}`;
+        const link = document.createElement("a");
+        link.href = downloadUrl;
+        link.download = targetPdfName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        addLog(`🎉 [THÀNH CÔNG] Đã kích hoạt tải xuống PDF gốc thành công: "${targetPdfName}". Trình duyệt sẽ lưu file này về thiết bị của bạn!`, "success");
+        addLog(`💡 [LƯU Ý] Trình duyệt web không được phép ghi đè trực tiếp vào ổ cứng (như thư mục "${settings.saveDir}"). Để lưu tự động trực tiếp vào thư mục cài đặt trên PC thực tế, vui lòng sử dụng gói Python Tool chạy Offline ở phía dưới.`, "warning");
+      } catch (err: any) {
+        addLog(`[CẢNH BÁO] Không thể tự động tải tệp qua trình duyệt: ${err.message}`, "warning");
+      }
       
       file.processedStatus = "success";
       setInvoiceFiles(prev => [...prev]);
@@ -936,7 +952,7 @@ export default function App() {
                 </button>
               </div>
               <p className="mt-2 text-[10px] text-slate-500 leading-relaxed font-sans italic">
-                Lưu ý: Playwright sẽ dùng lệnh <code className="font-mono bg-slate-100 text-slate-800 px-1 py-0.5 rounded font-bold">download.save_as()</code> để tải trực tiếp và ghi đè thẳng vào ổ đĩa của bạn trên PC thực tế.
+                Lưu ý: <b>Chế độ Trực tuyến (Web Sandbox)</b> sẽ tự động tải PDF về thông qua hộp tải xuống của trình duyệt do cơ chế bảo mật nghiêm ngặt. Để tệp tự động ghi đè sâu thẳng vào thư mục cục bộ của bạn trên máy tính (như <code className="font-mono text-emerald-700 font-bold bg-emerald-50 px-1 py-0.5 rounded">{settings.saveDir || "D:/HoaDon/"}</code>), <b>vui lòng tải & chạy Gói Python Tool Offline</b> ở cuối trang.
               </p>
             </div>
 
