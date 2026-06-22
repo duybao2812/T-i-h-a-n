@@ -436,12 +436,38 @@ export default function App() {
   const cancelOrReplacedFiles = invoiceFiles.filter(f => f.invoiceType === "canceled" || f.invoiceType === "replaced").length;
 
   const handleDownloadPythonZip = async () => {
-    addLog("Đang biên dịch và tải tệp ZIP mã nguồn Python từ server...", "info");
+    addLog("Đang tải tệp ZIP mã nguồn Python local...", "info");
     
+    // Thử cách 1: Tải trực tiếp tệp tĩnh /XML_Invoice_Downloader_Local.zip (Tối ưu nhất cho các nền tảng host tĩnh như Vercel)
+    try {
+      addLog("Thử tải tệp ZIP tĩnh trực tiếp từ CDN đầu tiên...", "info");
+      const staticResponse = await fetch("/XML_Invoice_Downloader_Local.zip");
+      if (staticResponse.ok) {
+        const blob = await staticResponse.blob();
+        const url = window.URL.createObjectURL(blob);
+        
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "XML_Invoice_Downloader_Local.zip";
+        document.body.appendChild(a);
+        a.click();
+        
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        addLog("Tải tệp ZIP XML_Invoice_Downloader_Local.zip tĩnh thành công!", "success");
+        return;
+      }
+      throw new Error(`Mã phản hồi từ máy chủ không phải 200 OK (Status: ${staticResponse.status})`);
+    } catch (staticErr: any) {
+      addLog(`Tải tệp tĩnh thất bại (${staticErr.message || staticErr}). Thử cách 2: Gọi API phân giải động từ Server Node...`, "warning");
+    }
+
+    // Thử cách 2: Gọi API động '/api/download-python-code' từ Server Node
     try {
       const response = await fetch("/api/download-python-code");
       if (!response.ok) {
-        throw new Error("Không thể tải mã nguồn");
+        throw new Error("Không thể tải mã nguồn từ API Server");
       }
       
       const blob = await response.blob();
@@ -456,9 +482,10 @@ export default function App() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       
-      addLog("Bản tải về tệp ZIP mã nguồn Python đã sẵn sàng và được gửi tới trình duyệt của bạn.", "success");
-    } catch (err) {
-      addLog(`Lỗi tải xuống mã nguồn Python: ${err}`, "error");
+      addLog("Bản tải về tệp ZIP mã nguồn Python đã sẵn sàng và được tải xuống thành công từ API server của bạn.", "success");
+    } catch (err: any) {
+      addLog(`Lỗi tải xuống mã nguồn Python: ${err.message || err}`, "error");
+      addLog("Mẹo: Nếu cả hai cách đều bị lỗi (ví dụ do chính sách mạng Vercel), bạn có thể gõ thêm đuôi '/XML_Invoice_Downloader_Local.zip' trực tiếp vào sau địa chỉ URL trang web của bạn để tải về.", "warning");
     }
   };
 
