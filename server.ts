@@ -29,46 +29,97 @@ app.post(["/api/analyze-xml", "/analyze-xml"], (req, res) => {
       let status: "valid" | "invalid" | "warning" = "valid";
       let errorDescription = "";
 
-      // 1. Trích xuất thông tin từ thẻ <TTKhac> (BẮT BUỘC theo yêu cầu)
-      // Tìm khối <TTKhac> ... </TTKhac>
+      // 1. Trích xuất thông tin từ thẻ <TTKhac> hoặc toàn bộ tệp (Cải tiến với các từ khóa động đa dạng)
       const ttKhacRegex = /<TTKhac[\s\S]*?>([\s\S]*?)<\/TTKhac>/i;
       const ttKhacMatch = content.match(ttKhacRegex);
+      const searchZone = ttKhacMatch ? ttKhacMatch[1] : content;
 
-      if (ttKhacMatch) {
-        const ttKhacContent = ttKhacMatch[1];
-        
-        // Tìm mã tra cứu trong <TTKhac>
-        // Các thẻ phổ biến: <MTC>, <MaTraCuu>, <MaTraCuuHDon>, <MTCHon>, <MaTraCuuHD>, <Value> gắn với MaTraCuu
+      const webKeys = ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link", "portallink", "portal_link", "portal", "trang_tc"];
+      const codeKeys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "co_quan_thue", "tc_code", "ma_bmat"];
+
+      const extractFromZone = (zoneText: string) => {
+        // Quét các khối thẻ <TTin> (chứa TTruong và DLieu hoặc Key và Value) để bóc tách động
+        const ttinRegex = /<TTin[^]*?>([\s\S]*?)<\/TTin[^>]*?>/gi;
+        let ttinMatch;
+        while ((ttinMatch = ttinRegex.exec(zoneText)) !== null) {
+          const block = ttinMatch[1];
+          const ttruongMatch = block.match(/<TTruong[^]*?>([^<]+)<\/TTruong[^>]*?>/i);
+          const dlieuMatch = block.match(/<DLieu[^]*?>([^<]+)<\/DLieu[^>]*?>/i);
+          
+          if (ttruongMatch && dlieuMatch) {
+            const key = ttruongMatch[1].trim().toLowerCase();
+            const val = dlieuMatch[1].trim();
+            if (webKeys.some(x => key.includes(x))) {
+              if (!website) website = val;
+            }
+            if (codeKeys.some(x => key.includes(x))) {
+              if (!code) code = val;
+            }
+          }
+
+          // Dạng Key / Value
+          const keyMatch = block.match(/<Key[^]*?>([^<]+)<\/Key[^>]*?>/i);
+          const valMatch = block.match(/<Value[^]*?>([^<]+)<\/Value[^>]*?>/i);
+          if (keyMatch && valMatch) {
+            const key = keyMatch[1].trim().toLowerCase();
+            const val = valMatch[1].trim();
+            if (webKeys.some(x => key.includes(x))) {
+              if (!website) website = val;
+            }
+            if (codeKeys.some(x => key.includes(x))) {
+              if (!code) code = val;
+            }
+          }
+        }
+      };
+
+      // Thử tìm trong khối <TTKhac> trước
+      extractFromZone(searchZone);
+
+      // Fallback: Tìm trên toàn bộ nội dung file nếu chưa có đầy đủ thông tin
+      if (!code || !website) {
+        extractFromZone(content);
+      }
+
+      // 2. Tìm mã tra cứu bằng các regex trực tiếp trên toàn bộ nội dung
+      if (!code) {
         const codeRegexes = [
           /<MTC[\s\S]*?>([^<]+)<\/MTC>/i,
           /<MaTraCuu[\s\S]*?>([^<]+)<\/MaTraCuu>/i,
           /<MaTraCuuHDon[\s\S]*?>([^<]+)<\/MaTraCuuHDon>/i,
           /<MTCHDon[\s\S]*?>([^<]+)<\/MTCHDon>/i,
           /<MaTraCuuHD[\s\S]*?>([^<]+)<\/MaTraCuuHD>/i,
-          /<Key[\s\S]*?>MTC<\/Key>\s*<Value[\s\S]*?>([^<]+)<\/Value>/i
+          /<Fkey[^]*?>([^<]+)<\/Fkey[^>]*?>/i,
+          /<F_key[^]*?>([^<]+)<\/F_key[^>]*?>/i,
+          /<SecretKey[^]*?>([^<]+)<\/SecretKey[^>]*?>/i,
+          /<Secret_Key[^]*?>([^<]+)<\/Secret_Key[^>]*?>/i,
+          /<MaBiMat[^]*?>([^<]+)<\/MaBiMat[^>]*?>/i
         ];
 
         for (const regex of codeRegexes) {
-          const match = ttKhacContent.match(regex);
+          const match = content.match(regex);
           if (match && match[1]) {
             code = match[1].trim();
             break;
           }
         }
+      }
 
-        // Tìm link tra cứu trong <TTKhac>
-        // Các thẻ phổ biến: <LinkTraCuu>, <TrangWebTraCuu>, <URLTraCuu>, <TrangWeb>, <Link>, <Value> chứa http
+      // 3. Tìm link website bằng các regex trực tiếp trên toàn bộ nội dung
+      if (!website) {
         const webRegexes = [
           /<LinkTraCuu[\s\S]*?>([^<]+)<\/LinkTraCuu>/i,
           /<TrangWebTraCuu[\s\S]*?>([^<]+)<\/TrangWebTraCuu>/i,
           /<URLTraCuu[\s\S]*?>([^<]+)<\/URLTraCuu>/i,
           /<TrangWeb[\s\S]*?>([^<]+)<\/TrangWeb>/i,
           /<Link[\s\S]*?>([^<]+)<\/Link>/i,
+          /<PortalLink[^]*?>([^<]+)<\/PortalLink[^>]*?>/i,
+          /<Portal_Link[^]*?>([^<]+)<\/Portal_Link[^>]*?>/i,
           /https?:\/\/[^\s<]+/i
         ];
 
         for (const regex of webRegexes) {
-          const match = ttKhacContent.match(regex);
+          const match = content.match(regex);
           if (match) {
             const rawWeb = match[1] ? match[1].trim() : match[0].trim();
             if (rawWeb.startsWith("http")) {
@@ -79,10 +130,10 @@ app.post(["/api/analyze-xml", "/analyze-xml"], (req, res) => {
         }
       }
 
-      // Nếu không tìm thấy mã tra cứu trong khối <TTKhac>
+      // Nếu không tìm thấy mã tra cứu
       if (!code) {
         status = "invalid";
-        errorDescription = "Không tìm thấy mã tra cứu trong thẻ <TTKhac>.";
+        errorDescription = "Hệ thống từ chối: Không tìm thấy mã tra cứu hóa đơn.";
       }
 
       // 2. Kiểm tra trạng thái/loại hóa đơn
@@ -203,45 +254,62 @@ def parse_xml_invoice(xml_content: str, file_name: str):
     ttkhac_match = re.search(r'<TTKhac[^\\s>]*?>([\\s\\S]*?)</TTKhac[^>]*?>', xml_content, re.IGNORECASE)
     search_zone = ttkhac_match.group(1) if ttkhac_match else xml_content
 
-    # 1. Quét các khối thẻ <TTin> (chứa TTruong và DLieu) để bóc tách động
-    ttin_blocks = re.findall(r'<TTin[^\\s>]*?>([\\s\\S]*?)</TTin[^>]*?>', search_zone, re.IGNORECASE)
-    for block in ttin_blocks:
-        ttruong_m = re.search(r'<TTruong[^\\s>]*?>([^<]+)</TTruong[^>]*?>', block, re.IGNORECASE)
-        dlieu_m = re.search(r'<DLieu[^\\s>]*?>([^<]+)</DLieu[^>]*?>', block, re.IGNORECASE)
-        if ttruong_m and dlieu_m:
-            key = ttruong_m.group(1).strip().lower()
-            val = dlieu_m.group(1).strip()
-            if any(x in key for x in ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link"]):
-                if not website:
-                    website = val
-            if any(x in key for x in ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton"]):
-                if not code:
-                    code = val
+    web_keys = ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link", "portallink", "portal_link", "portal", "trang_tc"]
+    code_keys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "co_quan_thue", "tc_code", "ma_bmat"]
 
-        # Thử tìm dạng Key/Value
-        key_m = re.search(r'<Key[^\\s>]*?>([^<]+)</Key[^>]*?>', block, re.IGNORECASE)
-        val_m = re.search(r'<Value[^\\s>]*?>([^<]+)</Value[^>]*?>', block, re.IGNORECASE)
-        if key_m and val_m:
-            key = key_m.group(1).strip().lower()
-            val = val_m.group(1).strip()
-            if any(x in key for x in ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link"]):
-                if not website:
-                    website = val
-            if any(x in key for x in ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton"]):
-                if not code:
-                    code = val
+    def extract_from_zone(zone_text: str):
+        nonlocal code, website
+        # 1. Quét các khối thẻ <TTin> (chứa TTruong và DLieu) để bóc tách động
+        ttin_blocks = re.findall(r'<TTin[^\\s>]*?>([\\s\\S]*?)</TTin[^>]*?>', zone_text, re.IGNORECASE)
+        for block in ttin_blocks:
+            ttruong_m = re.search(r'<TTruong[^\\s>]*?>([^<]+)</TTruong[^>]*?>', block, re.IGNORECASE)
+            dlieu_m = re.search(r'<DLieu[^\\s>]*?>([^<]+)</DLieu[^>]*?>', block, re.IGNORECASE)
+            if ttruong_m and dlieu_m:
+                key = ttruong_m.group(1).strip().lower()
+                val = dlieu_m.group(1).strip()
+                if any(x in key for x in web_keys):
+                    if not website:
+                        website = val
+                if any(x in key for x in code_keys):
+                    if not code:
+                        code = val
 
-    # 2. Nếu chưa thấy, dùng các biểu thức chính quy (Regex) trực tiếp trên vùng tìm kiếm
+            # Thử tìm dạng Key/Value
+            key_m = re.search(r'<Key[^\\s>]*?>([^<]+)</Key[^>]*?>', block, re.IGNORECASE)
+            val_m = re.search(r'<Value[^\\s>]*?>([^<]+)</Value[^>]*?>', block, re.IGNORECASE)
+            if key_m and val_m:
+                key = key_m.group(1).strip().lower()
+                val = val_m.group(1).strip()
+                if any(x in key for x in web_keys):
+                    if not website:
+                        website = val
+                if any(x in key for x in code_keys):
+                    if not code:
+                        code = val
+
+    # Thử tìm trong khối <TTKhac> trước
+    extract_from_zone(search_zone)
+
+    # Fallback: Quét toàn bộ nội dung xml_content nếu chưa có đầy đủ thông tin
+    if not code or not website:
+        extract_from_zone(xml_content)
+
+    # 2. Nếu chưa thấy, dùng các biểu thức chính quy (Regex) trực tiếp trên toàn bộ nội dung
     if not code:
         code_patterns = [
             r'<MTC[^\\s>]*?>([^<]+)</MTC[^>]*?>',
             r'<MaTraCuu[^\\s>]*?>([^<]+)</MaTraCuu[^>]*?>',
             r'<MaTraCuuHDon[^\\s>]*?>([^<]+)</MaTraCuuHDon[^>]*?>',
             r'<MTCHDon[^\\s>]*?>([^<]+)</MTCHDon[^>]*?>',
-            r'<MaTraCuuHD[^\\s>]*?>([^<]+)</MaTraCuuHD[^>]*?>'
+            r'<MaTraCuuHD[^\\s>]*?>([^<]+)</MaTraCuuHD[^>]*?>',
+            r'<Fkey[^\\s>]*?>([^<]+)</Fkey[^>]*?>',
+            r'<F_key[^\\s>]*?>([^<]+)</F_key[^>]*?>',
+            r'<SecretKey[^\\s>]*?>([^<]+)</SecretKey[^>]*?>',
+            r'<Secret_Key[^\\s>]*?>([^<]+)</Secret_Key[^>]*?>',
+            r'<MaBiMat[^\\s>]*?>([^<]+)</MaBiMat[^>]*?>'
         ]
         for pattern in code_patterns:
-            match = re.search(pattern, search_zone, re.IGNORECASE)
+            match = re.search(pattern, xml_content, re.IGNORECASE)
             if match:
                 code = match.group(1).strip()
                 break
@@ -252,17 +320,19 @@ def parse_xml_invoice(xml_content: str, file_name: str):
             r'<TrangWebTraCuu[^\\s>]*?>([^<]+)</TrangWebTraCuu[^>]*?>',
             r'<URLTraCuu[^\\s>]*?>([^<]+)</URLTraCuu[^>]*?>',
             r'<TrangWeb[^\\s>]*?>([^<]+)</TrangWeb[^>]*?>',
-            r'<Link[^\\s>]*?>([^<]+)</Link[^>]*?>'
+            r'<Link[^\\s>]*?>([^<]+)</Link[^>]*?>',
+            r'<PortalLink[^\\s>]*?>([^<]+)</PortalLink[^>]*?>',
+            r'<Portal_Link[^\\s>]*?>([^<]+)</Portal_Link[^>]*?>'
         ]
         for pattern in web_patterns:
-            match = re.search(pattern, search_zone, re.IGNORECASE)
+            match = re.search(pattern, xml_content, re.IGNORECASE)
             if match:
                 website = match.group(1).strip()
                 break
 
-    # Nếu vẫn chưa tìm thấy link, quét xem có URL http/https nào trong vùng tìm kiếm không
+    # Nếu vẫn chưa tìm thấy link, quét xem có URL http/https nào trong xml_content không
     if not website:
-        url_match = re.search(r'https?://[^\\s<"]+', search_zone, re.IGNORECASE)
+        url_match = re.search(r'https?://[^\\s<"]+', xml_content, re.IGNORECASE)
         if url_match:
             website = url_match.group(0).strip()
 

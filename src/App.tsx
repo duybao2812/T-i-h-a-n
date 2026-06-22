@@ -123,51 +123,69 @@ export default function App() {
         const ttKhacMatch = textContent.match(ttKhacRegex);
         const searchZone = ttKhacMatch ? ttKhacMatch[1] : textContent;
 
-        // 1. Quét các khối thẻ <TTin> (chứa TTruong và DLieu hoặc Key và Value) để bóc tách động
-        const ttinRegex = /<TTin[^]*?>([\s\S]*?)<\/TTin[^>]*?>/gi;
-        let ttinMatch;
-        while ((ttinMatch = ttinRegex.exec(searchZone)) !== null) {
-          const block = ttinMatch[1];
-          const ttruongMatch = block.match(/<TTruong[^]*?>([^<]+)<\/TTruong[^>]*?>/i);
-          const dlieuMatch = block.match(/<DLieu[^]*?>([^<]+)<\/DLieu[^>]*?>/i);
-          
-          if (ttruongMatch && dlieuMatch) {
-            const key = ttruongMatch[1].trim().toLowerCase();
-            const val = dlieuMatch[1].trim();
-            if (["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link"].some(x => key.includes(x))) {
-              if (!website) website = val;
-            }
-            if (["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton"].some(x => key.includes(x))) {
-              if (!code) code = val;
-            }
-          }
+        const webKeys = ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link", "portallink", "portal_link", "portal", "trang_tc"];
+        const codeKeys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "co_quan_thue", "tc_code", "ma_bmat"];
 
-          // Dạng Key / Value
-          const keyMatch = block.match(/<Key[^]*?>([^<]+)<\/Key[^>]*?>/i);
-          const valMatch = block.match(/<Value[^]*?>([^<]+)<\/Value[^>]*?>/i);
-          if (keyMatch && valMatch) {
-            const key = keyMatch[1].trim().toLowerCase();
-            const val = valMatch[1].trim();
-            if (["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link"].some(x => key.includes(x))) {
-              if (!website) website = val;
+        const extractFromZone = (zoneText: string) => {
+          // 1. Quét các khối thẻ <TTin> (chứa TTruong và DLieu hoặc Key và Value) để bóc tách động
+          const ttinRegex = /<TTin[^]*?>([\s\S]*?)<\/TTin[^>]*?>/gi;
+          let ttinMatch;
+          while ((ttinMatch = ttinRegex.exec(zoneText)) !== null) {
+            const block = ttinMatch[1];
+            const ttruongMatch = block.match(/<TTruong[^]*?>([^<]+)<\/TTruong[^>]*?>/i);
+            const dlieuMatch = block.match(/<DLieu[^]*?>([^<]+)<\/DLieu[^>]*?>/i);
+            
+            if (ttruongMatch && dlieuMatch) {
+              const key = ttruongMatch[1].trim().toLowerCase();
+              const val = dlieuMatch[1].trim();
+              if (webKeys.some(x => key.includes(x))) {
+                if (!website) website = val;
+              }
+              if (codeKeys.some(x => key.includes(x))) {
+                if (!code) code = val;
+              }
             }
-            if (["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton"].some(x => key.includes(x))) {
-              if (!code) code = val;
+
+            // Dạng Key / Value
+            const keyMatch = block.match(/<Key[^]*?>([^<]+)<\/Key[^>]*?>/i);
+            const valMatch = block.match(/<Value[^]*?>([^<]+)<\/Value[^>]*?>/i);
+            if (keyMatch && valMatch) {
+              const key = keyMatch[1].trim().toLowerCase();
+              const val = valMatch[1].trim();
+              if (webKeys.some(x => key.includes(x))) {
+                if (!website) website = val;
+              }
+              if (codeKeys.some(x => key.includes(x))) {
+                if (!code) code = val;
+              }
             }
           }
+        };
+
+        // Thử tìm trong khối <TTKhac> trước
+        extractFromZone(searchZone);
+
+        // Fallback: Tìm trên toàn bộ nội dung file nếu chưa có đầy đủ thông tin
+        if (!code || !website) {
+          extractFromZone(textContent);
         }
 
-        // 2. Nếu chưa thấy, dùng các biểu thức chính quy (Regex) trực tiếp trên vùng tìm kiếm
+        // 2. Nếu chưa thấy, dùng các biểu thức chính quy (Regex) trực tiếp trên toàn bộ nội dung tìm kiếm
         if (!code) {
           const codePatterns = [
             /<MTC[^]*?>([^<]+)<\/MTC[^>]*?>/i,
             /<MaTraCuu[^]*?>([^<]+)<\/MaTraCuu[^>]*?>/i,
             /<MaTraCuuHDon[^]*?>([^<]+)<\/MaTraCuuHDon[^>]*?>/i,
             /<MTCHDon[^]*?>([^<]+)<\/MTCHDon[^>]*?>/i,
-            /<MaTraCuuHD[^]*?>([^<]+)<\/MaTraCuuHD[^>]*?>/i
+            /<MaTraCuuHD[^]*?>([^<]+)<\/MaTraCuuHD[^>]*?>/i,
+            /<Fkey[^]*?>([^<]+)<\/Fkey[^>]*?>/i,
+            /<F_key[^]*?>([^<]+)<\/F_key[^>]*?>/i,
+            /<SecretKey[^]*?>([^<]+)<\/SecretKey[^>]*?>/i,
+            /<Secret_Key[^]*?>([^<]+)<\/Secret_Key[^>]*?>/i,
+            /<MaBiMat[^]*?>([^<]+)<\/MaBiMat[^>]*?>/i
           ];
           for (const pattern of codePatterns) {
-            const match = searchZone.match(pattern);
+            const match = textContent.match(pattern);
             if (match && match[1]) {
               code = match[1].trim();
               break;
