@@ -498,6 +498,16 @@ import os
 import re
 import base64
 import asyncio
+import sys
+import platform
+import traceback
+
+if platform.system() == "Windows":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception as loop_ex:
+        print(f"Cảnh báo cấu hình Windows Event Loop: {loop_ex}")
+
 import xml.etree.ElementTree as ET
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -529,6 +539,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "message": "XML Invoice Downloader Local Server is running!"}
 
 # Nạp cơ sở dữ liệu nhà cung cấp từ tệp invoice_providers.xml
 provider_mapping = {}
@@ -1107,8 +1121,14 @@ async def download_single_pdf(
             return {"status": "success", "pdfPath": pdf_path, "message": f"Tải và lưu trực tiếp thành công file {pdf_filename} vào thư mục {saveDir}"}
 
     except Exception as e:
-        print(f"Lỗi Playwright: {str(e)}")
-        return JSONResponse(status_code=500, content={"error": f"Lỗi xử lý tự động hóa hóa đơn: {str(e)}"})
+        traceback.print_exc()
+        err_msg = f"{type(e).__name__}: {str(e)}" if str(e) else f"{type(e).__name__}"
+        if "executable" in err_msg.lower() or "playwright install" in err_msg.lower() or "browser" in err_msg.lower():
+            err_msg = "Chưa cài đặt trình duyệt tự động hóa Playwright Chromium. Hãy mở cửa sổ dòng lệnh CMD tại thư mục này và chạy lệnh: playwright install chromium"
+        elif "loop" in err_msg.lower():
+            err_msg = "Lỗi Event Loop không đồng bộ trên Windows. Hãy thử khởi chạy lại run.bat hoặc chạy lệnh trực tiếp bằng: python app.py"
+        print(f"Lỗi Playwright: {err_msg}")
+        return JSONResponse(status_code=500, content={"error": f"Lỗi xử lý tự động hóa hóa đơn: {err_msg}"})
 
 # Hỗ trợ nhận captcha giải tay từ Client và chạy tiếp luồng của phiên cũ
 @app.post("/api/resume-download-with-captcha")
@@ -1152,7 +1172,7 @@ async def serve_index():
 
 if __name__ == "__main__":
     print("Khởi chạy ứng dụng tại http://localhost:8000")
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
 `;
 
     const requirementsContent = `fastapi>=0.100.0

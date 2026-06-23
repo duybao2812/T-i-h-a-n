@@ -113,10 +113,8 @@ export default function App() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 1200);
         
-        const res = await fetch("http://127.0.0.1:8000/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ files: [], saveDir: "D:/" }),
+        const res = await fetch("http://127.0.0.1:8000/api/health", {
+          method: "GET",
           signal: controller.signal
         });
         clearTimeout(timeoutId);
@@ -233,7 +231,7 @@ export default function App() {
           "0312483391": { name: "Công ty Cổ phần Dịch vụ Hóa đơn điện tử AZ (LCD VN)", website: "https://tracuu.azinvoice.com/", codeTag: "" },
           "0106026495": { name: "Công ty Cổ phần M-INVOICE", website: "https://tracuu.minvoice.vn/", codeTag: "", keyType: "TTruong", keyName: "Số bảo mật" },
           "0313906508": { name: "Công ty TNHH Nguyễn Minh VAT", website: "https://tracuu.nguyenminhvat.vn/", codeTag: "" },
-          "0101300842": { name: "Công ty Công nghệ Thái Sơn", website: "https://tracuu.nguyenminhvat.vn/", codeTag: "" },
+          "0101300842": { name: "Công ty Công nghệ Thái Sơn", website: "https://saigoncoop.einvoice.com.vn/", codeTag: "", keyType: "TTruong", keyName: "Mã TC" },
           "0306784030": { name: "Công ty Cổ phần Kết nối", website: "https://tracuu.ehoadon.online/", codeTag: "" },
           "0200638946": { name: "Công ty Cổ phần Thiết kế Đồ họa", website: "https://tracuu.oinvoice.vn/", codeTag: "" },
           "0312303803": { name: "Công ty TNHH Giải pháp Win Tech", website: "https://tracuu.wininvoice.vn/", codeTag: "" },

@@ -9,6 +9,16 @@ import os
 import re
 import base64
 import asyncio
+import sys
+import platform
+import traceback
+
+if platform.system() == "Windows":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception as loop_ex:
+        print(f"Cảnh báo cấu hình Windows Event Loop: {loop_ex}")
+
 import xml.etree.ElementTree as ET
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -40,6 +50,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "message": "XML Invoice Downloader Local Server is running!"}
 
 # Nạp cơ sở dữ liệu nhà cung cấp từ tệp invoice_providers.xml
 provider_mapping = {}
@@ -86,6 +100,70 @@ if "0101243150" not in provider_mapping:
         "key_type": "TTruong",
         "key_name": "TransactionID"
     }
+
+# Bo loc thong minh (Smart Filter) tu dong nhan dien ma tra cuu bang thuat toan doan dong (Heuristic)
+def heuristic_extract_lookup_code(xml_root_element):
+    import re
+    
+    def get_local_name(elem):
+        return elem.tag.split('}')[-1]
+        
+    semantic_keywords = ['ma', 'tra cuu', 'bao mat', 'fkey', 'key', 'id', 'token', 'secret', 'code', 'mat khau', 'chuoi']
+    
+    def remove_vietnamese_sign(text):
+        if not text: return ""
+        text = text.lower()
+        replacements = {
+            'á':'a','à':'a','ả':'a','ã':'a','ạ':'a','ă':'a','ắ':'a','ằ':'a','ẳ':'a','ẵ':'a','ặ':'a','â':'a','ấ':'a','ầ':'a','ẩ':'a','ẫ':'a','ậ':'a',
+            'é':'e','è':'e','ẻ':'e','ẽ':'e','ẹ':'e','ê':'e','ế':'e','ề':'e','ể':'e','ễ':'e','ệ':'e',
+            'í':'i','ì':'i','ỉ':'i','ĩ':'i','ị':'i',
+            'ó':'o','ò':'o','ỏ':'o','õ':'o','ọ':'o','ô':'o','ố':'o','ồ':'o','ổ':'o','ỗ':'o','ộ':'o','ơ':'o','ớ':'o','ờ':'o','ở':'o','ỡ':'o','ợ':'o',
+            'ú':'u','à':'u','ủ':'u','ũ':'u','ụ':'u','ư':'u','ứ':'u','ừ':'u','ử':'u','ữ':'u','ự':'u',
+            'ý':'y','ỳ':'y','ỷ':'y','ỹ':'y','ỵ':'y','đ':'d'
+        }
+        for k, v in replacements.items():
+            text = text.replace(k, v)
+        return text.strip()
+
+    ttin_elements = [e for e in xml_root_element.iter() if get_local_name(e) == 'TTin']
+    
+    for ttin in ttin_elements:
+        # GIAI PHAP: Map toan bo the con vao Dictionary de triet tieu loi sai thu tu
+        child_map = {get_local_name(ch): ch for ch in ttin}
+        
+        ttruong_elem = child_map.get('TTruong')
+        kdlieu_elem = child_map.get('KDLieu')
+        dlieu_elem = child_map.get('DLieu')
+        
+        if ttruong_elem is not None and kdlieu_elem is not None and dlieu_elem is not None:
+            ttruong_text = ttruong_elem.text if ttruong_elem.text else ""
+            kdlieu_text = kdlieu_elem.text.strip().lower() if kdlieu_elem.text else ""
+            dlieu_text = dlieu_elem.text.strip() if dlieu_elem.text else ""
+            
+            # Kiem tra Dieu kien 1: Kieu du lieu string
+            if kdlieu_text == "string":
+                ttruong_clean = remove_vietnamese_sign(ttruong_text)
+                
+                # Kiem tra Dieu kien 2: Khớp từ khóa ngữ nghĩa
+                has_keyword = any(kw in ttruong_clean for kw in semantic_keywords)
+                
+                if has_keyword:
+                    # Lam sach chuoi neu co ky tu ghi chu hoac dau cach la
+                    # Chi lay phan text chu va so hop le lam token ma tra cuu
+                    clean_match = re.search(r'[A-Za-z0-9\-_;]+', dlieu_text)
+                    if clean_match:
+                        final_code = clean_match.group(0)
+                        
+                        # Kiem tra Dieu kien 3: Do dai >= 6 va khong phai so thuan tuy
+                        if len(final_code) >= 6 and not final_code.isdigit():
+                            if not re.match(r'^\d{4}-\d{2}-\d{2}$', final_code):
+                                return {
+                                    "status": "success",
+                                    "key_name": ttruong_text,
+                                    "ma_tra_cuu": final_code
+                                }
+                            
+    return {"status": "failed", "message": "Khong tu dong nhan dien duoc ma tra cuu"}
 
 # Hàm trích xuất thông tin hóa đơn từ XML đúng nghiệp vụ
 def parse_xml_invoice(xml_content: str, file_name: str):
@@ -150,7 +228,7 @@ def parse_xml_invoice(xml_content: str, file_name: str):
         ttin_blocks = [n for n in valid_nodes if n.tag.split('}')[-1] == "TTin"]
         
         web_keys = ["trangtracuu", "trang_tra_cuu", "linktracuu", "link_tra_cuu", "urltracuu", "url_tra_cuu", "webtracuu", "trangweb", "website", "link", "portallink", "portal_link", "portal", "trang_tc"]
-        code_keys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "co_quan_thue", "tc_code", "ma_bmat"]
+        code_keys = ["matracuu", "ma_tra_cuu", "mtc", "keytracuu", "key_tra_cuu", "mabuuton", "fkey", "f_key", "f-key", "secretkey", "secret_key", "mabimat", "ma_bi_mat", "matc", "ma_tc", "ma_nhan_hd", "manhanhd", "ma_dnhap", "madnhap", "ma_bmat"]
 
         def is_valid_lookup_url(url: str) -> bool:
             if not url:
@@ -161,7 +239,7 @@ def parse_xml_invoice(xml_content: str, file_name: str):
                 return False
             return True
 
-        # BIẾN KIỂM SOÁT QUÉT ĐỘNG THEO LUẬT NHÀ CUNG CẤP CẤU HÌNH
+        # BIẾN KIỂM SOÁT QUÉT ĐỘNG THEO LUẬT NHÀ CUNG CẤU CẤU HÌNH
         dynamic_rule_active = False
         dynamic_matched_code = False
         
@@ -197,12 +275,18 @@ def parse_xml_invoice(xml_content: str, file_name: str):
                 if dynamic_matched_code:
                     print(f"[Engine Quét Động] Đã trích xuất mã [{code}] thành công theo luật {key_type} (KeyName: {key_name}) của nhà cung cấp có MST {msttcgp}")
                 else:
-                    status = "invalid"
-                    error_desc = f"Hệ thống từ chối: Không quét được mã tra cứu theo luật của nhà cung cấp {msttcgp} (KeyName: {key_name})"
-                    print(f"[Engine Quét Động] {error_desc}")
+                    status = "rejected"
+                    error_desc = "Khong tim thay ma tra cuu rieng theo quy tac tinh hop le cua the <TTKhac>"
+                    print(f"[Engine Quet Dong] {error_desc}")
 
         if not dynamic_rule_active:
-            # Trích xuất từ các khối TTin theo giải pháp tự động đa tầng khi không có luật riêng
+            # Ap dung thuat toan Heuristic doan dong ma tra cuu truoc tien (Viet comment bang tieng Viet khong dau)
+            heuristic_res = heuristic_extract_lookup_code(root_el)
+            if heuristic_res["status"] == "success":
+                code = heuristic_res["ma_tra_cuu"]
+                print(f"[Heuristic Python] Da tu dong nhan dien ma tra cuu: [{code}] voi ten truong '{heuristic_res['key_name']}'")
+
+            # Trich xuat tu cac khoi TTin theo giai phap tu dong da tang khi khong co luat rieng (chi giu lai website)
             for block in ttin_blocks:
                 ttruong = ""
                 dlieu = ""
@@ -213,7 +297,7 @@ def parse_xml_invoice(xml_content: str, file_name: str):
                     if lname == "TTruong" and child.text:
                         ttruong = child.text.strip().lower()
                     elif lname == "DLieu" and child.text:
-                        # Loại trừ Chữ ký số: khi nội dung có xmldsig, bỏ qua ngay!
+                        # Loai tru Chu ky so: khi noi dung co xmldsig, bo qua ngay!
                         if "xmldsig" in child.text.lower():
                             continue
                         dlieu = child.text.strip()
@@ -229,18 +313,12 @@ def parse_xml_invoice(xml_content: str, file_name: str):
                     if any(normalize_key(k) in norm_ttruong or norm_ttruong in normalize_key(k) for k in web_keys) and is_valid_lookup_url(dlieu):
                         if not website:
                             website = dlieu
-                    if any(normalize_key(k) in norm_ttruong or norm_ttruong in normalize_key(k) for k in code_keys):
-                        if not code:
-                            code = dlieu
 
                 if key_val and val_val:
                     norm_key = normalize_key(key_val)
                     if any(normalize_key(k) in norm_key or norm_key in normalize_key(k) for k in web_keys) and is_valid_lookup_url(val_val):
                         if not website:
                             website = val_val
-                    if any(normalize_key(k) in norm_key or norm_key in normalize_key(k) for k in code_keys):
-                        if not code:
-                            code = val_val
 
         # Nếu không có TTin hoặc chưa tìm được, tìm trong các node có cấu trúc thẻ trực tiếp
         if not website:
@@ -337,8 +415,8 @@ def parse_xml_invoice(xml_content: str, file_name: str):
             website = "https://" + website
 
     if status == "valid" and not code:
-        status = "invalid"
-        error_desc = "Không tìm thấy mã tra cứu hóa đơn."
+        status = "rejected"
+        error_desc = "Khong tim thay ma tra cuu rieng theo quy tac tinh hop le cua the <TTKhac>"
 
     # Kiểm tra hóa đơn hủy hoặc thay thế bằng việc tìm kiếm từ khóa trong chuỗi XML
     lower_content = xml_content.lower()
@@ -554,8 +632,14 @@ async def download_single_pdf(
             return {"status": "success", "pdfPath": pdf_path, "message": f"Tải và lưu trực tiếp thành công file {pdf_filename} vào thư mục {saveDir}"}
 
     except Exception as e:
-        print(f"Lỗi Playwright: {str(e)}")
-        return JSONResponse(status_code=500, content={"error": f"Lỗi xử lý tự động hóa hóa đơn: {str(e)}"})
+        traceback.print_exc()
+        err_msg = f"{type(e).__name__}: {str(e)}" if str(e) else f"{type(e).__name__}"
+        if "executable" in err_msg.lower() or "playwright install" in err_msg.lower() or "browser" in err_msg.lower():
+            err_msg = "Chưa cài đặt trình duyệt tự động hóa Playwright Chromium. Hãy mở cửa sổ dòng lệnh CMD tại thư mục này và chạy lệnh: playwright install chromium"
+        elif "loop" in err_msg.lower():
+            err_msg = "Lỗi Event Loop không đồng bộ trên Windows. Hãy thử khởi chạy lại run.bat hoặc chạy lệnh trực tiếp bằng: python app.py"
+        print(f"Lỗi Playwright: {err_msg}")
+        return JSONResponse(status_code=500, content={"error": f"Lỗi xử lý tự động hóa hóa đơn: {err_msg}"})
 
 # Hỗ trợ nhận captcha giải tay từ Client và chạy tiếp luồng của phiên cũ
 @app.post("/api/resume-download-with-captcha")
@@ -599,4 +683,4 @@ async def serve_index():
 
 if __name__ == "__main__":
     print("Khởi chạy ứng dụng tại http://localhost:8000")
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
