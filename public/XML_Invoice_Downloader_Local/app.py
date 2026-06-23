@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from playwright.async_api import async_playwright
 import uvicorn
 import requests
+from fastapi.middleware.cors import CORSMiddleware
 
 # Khởi tạo thư viện ddddocr (Phương thức 2: Miễn phí cục bộ)
 try:
@@ -31,6 +32,14 @@ except Exception as e:
     print(f"[CẢNH BÁO] Không thể nạp ddddocr ({e}). Sẽ tự động chuyển sang gõ captcha bằng tay nếu không dùng 2Captcha.")
 
 app = FastAPI(title="XML Invoice PDF Downloader")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Hàm trích xuất thông tin hóa đơn từ XML đúng nghiệp vụ
 def parse_xml_invoice(xml_content: str, file_name: str):

@@ -104,6 +104,44 @@ export default function App() {
   const [captchaImageData, setCaptchaImageData] = useState<string>("");
   const [captchaInputVal, setCaptchaInputVal] = useState<string>("");
   const [activeSessionId, setActiveSessionId] = useState<string>("");
+  const [localServerOnline, setLocalServerOnline] = useState<boolean>(false);
+
+  useEffect(() => {
+    let active = true;
+    const checkLocalServer = async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1200);
+        
+        const res = await fetch("http://127.0.0.1:8000/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ files: [], saveDir: "D:/" }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (res.ok && active) {
+          if (!localServerOnline) {
+            addLog("⚡ [KẾT NỐI] Đã phát hiện thấy Công cụ Python Local (run.bat) đang hoạt động tại cổng 8000! Giao diện web đã tự động kích hoạt chế độ đồng bộ trực tiếp vào máy tính (Hybrid Local Mode). Toàn bộ hóa đơn PDF sẽ được tải và lưu thẳng 100% vào ổ cứng của bạn!", "success");
+          }
+          setLocalServerOnline(true);
+        } else if (active) {
+          setLocalServerOnline(false);
+        }
+      } catch (e) {
+        if (active) {
+          setLocalServerOnline(false);
+        }
+      }
+    };
+
+    checkLocalServer();
+    const interval = setInterval(checkLocalServer, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [localServerOnline]);
   
   // Ref để tự động scroll logs
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -668,6 +706,57 @@ export default function App() {
       setCurrentProcessingIndex(i);
       file.processedStatus = "processing";
       setInvoiceFiles(prev => [...prev]);
+
+      if (localServerOnline) {
+        addLog(`[LOCAL ROUTE] Đang gửi yêu cầu tra cứu và tải hóa đơn cục bộ qua máy chủ Python local (http://127.0.0.1:8000)...`, "info");
+        try {
+          const formData = new FormData();
+          formData.append("fileName", file.fileName);
+          formData.append("code", file.code);
+          formData.append("website", file.website);
+          formData.append("saveDir", settings.saveDir);
+          formData.append("captchaMethod", settings.captchaMethod);
+          formData.append("apiKey2Captcha", settings.apiKey2Captcha);
+
+          const response = await fetch("http://127.0.0.1:8000/api/download-single", {
+            method: "POST",
+            body: formData
+          });
+
+          const resData = await response.json();
+
+          if (resData.status === "captcha_required") {
+            file.processedStatus = "captcha_required";
+            setInvoiceFiles(prev => [...prev]);
+            addLog(`[YÊU CẦU CAPTCHA] Trang tra cứu yêu cầu nhập mã kiểm tra cho tệp [${file.fileName}].`, "warning");
+            
+            setCaptchaImageData(`data:image/png;base64,${resData.captchaImage}`);
+            setActiveSessionId(resData.sessionId);
+            setCaptchaInputVal("");
+            setCaptchaModalOpen(true);
+
+            // Treo luồng chờ người dùng nhập captcha
+            await new Promise<void>((resolve) => {
+              (window as any).resumeAutomationFlow = () => {
+                resolve();
+              };
+            });
+          } else if (resData.status === "success" || response.ok) {
+            file.processedStatus = "success";
+            setInvoiceFiles(prev => [...prev]);
+            addLog(`🎉 [THÀNH CÔNG] Đã tải thành công hóa đơn PDF và lưu trực tiếp vào thư mục chỉ định cục bộ: "${settings.saveDir}${file.fileName.replace(/\.xml$/i, ".pdf")}" !`, "success");
+          } else {
+            file.processedStatus = "failed";
+            setInvoiceFiles(prev => [...prev]);
+            addLog(`[LỖI THẤT BẠI LOCAL] File [${file.fileName}] bị lỗi: ${resData.error || "Truy cập không thành công."}`, "error");
+          }
+        } catch (err: any) {
+          file.processedStatus = "failed";
+          setInvoiceFiles(prev => [...prev]);
+          addLog(`[LỖI KẾT NỐI LOCAL] Không thể giao tiếp với server local: ${err.message}`, "error");
+        }
+        continue;
+      }
       
       addLog(`Đang khởi tạo trình duyệt Chrome ngầm (Playwright) truy cập trang: ${file.website}`, "info");
       addLog(`Tự động nhập mã tra cứu: ${file.code}`, "info");
@@ -775,18 +864,49 @@ export default function App() {
     setShowSuccessModal(true);
   };
 
-  const submitManualCaptcha = () => {
+  const submitManualCaptcha = async () => {
     if (!captchaInputVal.trim()) {
       alert("Vui lòng nhập lời giải mã bảo vệ Captcha!");
       return;
     }
     setCaptchaModalOpen(false);
-    addLog(`Đang gửi chuỗi Captcha tự nhập: "${captchaInputVal.toUpperCase()}" vào trang chủ cơ quan tra cứu hóa đơn trực tuyến...`, "info");
+    addLog(`Đang gửi chuỗi Captcha tự nhập: "${captchaInputVal.toUpperCase()}"...`, "info");
     
-    // Đánh dấu file này thành công trên log
-    if (currentProcessingIndex !== -1) {
+    if (localServerOnline && currentProcessingIndex !== -1) {
       const file = invoiceFiles[currentProcessingIndex];
-      file.processedStatus = "success";
+      try {
+        const formData = new FormData();
+        formData.append("sessionId", activeSessionId);
+        formData.append("captchaSolution", captchaInputVal.toUpperCase());
+        formData.append("fileName", file.fileName);
+        formData.append("code", file.code);
+        formData.append("website", file.website);
+        formData.append("saveDir", settings.saveDir);
+
+        const response = await fetch("http://127.0.0.1:8000/api/resume-download-with-captcha", {
+          method: "POST",
+          body: formData
+        });
+        const resData = await response.json();
+        if (resData.status === "success" || response.ok) {
+          file.processedStatus = "success";
+          addLog(`🎉 [THÀNH CÔNG] Đã hoàn tất giải Captcha thủ công! File PDF "${file.fileName.replace(/\.xml$/i, ".pdf")}" đã lưu sâu vào thư mục cục bộ "${settings.saveDir}"!`, "success");
+        } else {
+          file.processedStatus = "failed";
+          addLog(`[LỖI THẤT BẠI GIẢI CAPTCHA] ${resData.error || "Không thể tiếp tục xử lý."}`, "error");
+        }
+      } catch (localErr: any) {
+        file.processedStatus = "failed";
+        addLog(`[LỖI KẾT NỐI LOCAL] Không thể giải captcha local: ${localErr.message}`, "error");
+      }
+      setInvoiceFiles(prev => [...prev]);
+    } else {
+      // Đánh dấu file này thành công trên log (chế độ online giả lập)
+      if (currentProcessingIndex !== -1) {
+        const file = invoiceFiles[currentProcessingIndex];
+        file.processedStatus = "success";
+        setInvoiceFiles(prev => [...prev]);
+      }
     }
 
     if ((window as any).resumeAutomationFlow) {
@@ -919,6 +1039,28 @@ export default function App() {
         {/* Cột trái: Cấu hình và Bảng điều khiển */}
         <section id="sidebar-panel" className="lg:col-span-4 lg:border-r border-[#1A1A1A]/10 p-6 md:p-10 lg:p-12 flex flex-col justify-between gap-10">
           <div className="space-y-8">
+            {/* Trạng thái kết nối Hybrid Local Server */}
+            <div className={`p-4 rounded-xl border transition-all ${
+              localServerOnline 
+              ? "bg-emerald-50 border-emerald-500/30 text-emerald-950" 
+              : "bg-amber-50/50 border-amber-500/20 text-amber-900"
+            }`}>
+              <div className="flex items-center gap-2.5">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${localServerOnline ? "bg-emerald-500" : "bg-amber-500"}`}></span>
+                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${localServerOnline ? "bg-emerald-600" : "bg-amber-500"}`}></span>
+                </span>
+                <span className="text-[11.5px] font-black uppercase tracking-wider">
+                  {localServerOnline ? "ĐÃ LIÊN KẾT LOCAL (run.bat)" : "CHẾ ĐỘ TRỰC TUYẾN (WEB)"}
+                </span>
+              </div>
+              <p className="text-[10px] mt-1.5 opacity-80 leading-relaxed">
+                {localServerOnline 
+                  ? `Máy chủ cục bộ đang mở! Khi bấm xử lý, hệ thống sẽ sử dụng Playwright local của bạn để tự động tra cứu, vượt captcha và lưu thẳng tệp PDF vào thư mục "${settings.saveDir}" trên máy PC thực tế.` 
+                  : `Đang chạy qua Web Sandbox. PDF tải về sẽ dồn vào hộp lưu mặc định của trình duyệt (thường ở Downloads). HÃY CHẠY FILE "run.bat" ĐỂ ĐỒNG BỘ LƯU TRỰC TIẾP VÀO THƯ MỤC CHỈ ĐỊNH.`}
+              </p>
+            </div>
+
             {/* Mục nhập đường lưu trữ */}
             <div id="dir-config-group">
               <label className="block text-[10.5px] font-bold uppercase tracking-[0.2em] mb-3 text-[#1A1A1A]/60 font-serif">
